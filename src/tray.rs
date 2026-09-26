@@ -95,8 +95,10 @@ unsafe fn make_icon(color: COLORREF) -> HICON {
 }
 
 fn set_tip(s: &mut TrayState, text: &str) {
-    let mut nid = NOTIFYICONDATAW::default();
-    nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+    let mut nid = NOTIFYICONDATAW {
+        cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+        ..Default::default()
+    };
     nid.hWnd = s.hwnd;
     nid.uID = TRAY_ID;
     nid.uFlags = NIF_ICON | NIF_TIP;
@@ -280,8 +282,10 @@ unsafe extern "system" fn wndproc(
             LRESULT(0)
         }
         WM_DESTROY => {
-            let mut nid = NOTIFYICONDATAW::default();
-            nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+            let mut nid = NOTIFYICONDATAW {
+                cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+                ..Default::default()
+            };
             nid.hWnd = hwnd;
             nid.uID = TRAY_ID;
             let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
@@ -347,8 +351,10 @@ pub fn run(cfg: crate::Config) {
         });
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, (&mut *state) as *mut TrayState as isize);
 
-        let mut nid = NOTIFYICONDATAW::default();
-        nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+        let mut nid = NOTIFYICONDATAW {
+            cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+            ..Default::default()
+        };
         nid.hWnd = hwnd;
         nid.uID = TRAY_ID;
         nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;

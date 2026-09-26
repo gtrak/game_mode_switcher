@@ -3,7 +3,8 @@ use windows::Win32::Devices::Display::{
     QueryDisplayConfig, DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO,
     DISPLAYCONFIG_DEVICE_INFO_HEADER, DISPLAYCONFIG_DEVICE_INFO_SET_ADVANCED_COLOR_STATE,
     DISPLAYCONFIG_DEVICE_INFO_TYPE, DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO,
-    DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_MODE_INFO, DISPLAYCONFIG_SET_ADVANCED_COLOR_STATE,
+    DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO_0, DISPLAYCONFIG_PATH_INFO, DISPLAYCONFIG_MODE_INFO,
+    DISPLAYCONFIG_SET_ADVANCED_COLOR_STATE, DISPLAYCONFIG_SET_ADVANCED_COLOR_STATE_0,
     QDC_ONLY_ACTIVE_PATHS,
 };
 use windows::Win32::Foundation::ERROR_SUCCESS;
@@ -51,12 +52,16 @@ pub(crate) struct HdrInfo {
 pub(crate) fn hdr_state() -> Result<Option<HdrInfo>, String> {
     let (adapter, id) = primary_target()?;
     unsafe {
-        let mut get = DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO::default();
-        get.header = DISPLAYCONFIG_DEVICE_INFO_HEADER {
-            r#type: DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO,
-            size: std::mem::size_of::<DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO>() as u32,
-            adapterId: adapter,
-            id,
+        let mut get = DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO {
+            header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
+                r#type: DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO,
+                size: std::mem::size_of::<DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO>() as u32,
+                adapterId: adapter,
+                id,
+            },
+            Anonymous: DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO_0 { value: 0 },
+            bitsPerColorChannel: 0,
+            colorEncoding: Default::default(),
         };
         let err = DisplayConfigGetDeviceInfo(&mut get.header);
         if err != 0 {
@@ -139,12 +144,16 @@ fn wait_legacy(on: bool, tries: u32, delay_ms: u64) -> bool {
 fn legacy_set(on: bool) -> Result<(), String> {
     let (adapter, id) = primary_target()?;
     unsafe {
-        let mut set = DISPLAYCONFIG_SET_ADVANCED_COLOR_STATE::default();
-        set.header = DISPLAYCONFIG_DEVICE_INFO_HEADER {
-            r#type: DISPLAYCONFIG_DEVICE_INFO_SET_ADVANCED_COLOR_STATE,
-            size: std::mem::size_of::<DISPLAYCONFIG_SET_ADVANCED_COLOR_STATE>() as u32,
-            adapterId: adapter,
-            id,
+        let mut set = DISPLAYCONFIG_SET_ADVANCED_COLOR_STATE {
+            header: DISPLAYCONFIG_DEVICE_INFO_HEADER {
+                r#type: DISPLAYCONFIG_DEVICE_INFO_SET_ADVANCED_COLOR_STATE,
+                size: std::mem::size_of::<DISPLAYCONFIG_SET_ADVANCED_COLOR_STATE>() as u32,
+                adapterId: adapter,
+                id,
+            },
+            Anonymous: DISPLAYCONFIG_SET_ADVANCED_COLOR_STATE_0 {
+                Anonymous: Default::default(),
+            },
         };
         set.Anonymous.value = if on { 1 } else { 0 };
         let err = DisplayConfigSetDeviceInfo(&set.header);
