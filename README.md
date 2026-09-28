@@ -26,7 +26,7 @@ Windows 11.
   and HDR on/off/toggle, all headless
 - **HDR control that works** — uses the undocumented DisplayConfig
   advanced-color type-16 SET (verified against the type-15 GET, with legacy
-  DisplayConfig and NVAPI as fallbacks), because the documented
+  DisplayConfig as a fallback), because the documented
   `SET_ADVANCED_COLOR_STATE` silently no-ops on recent Windows 11 builds
 
 ## Build
@@ -173,9 +173,8 @@ undocumented `DisplayConfigSetDeviceInfo` payload types: a type-15 GET
 (size 36) whose state enum at offset 32 reads `1` = SDR / `2` = HDR, and a
 type-16 SET (size 24) whose payload u32 at offset 20 writes `0` = SDR /
 `1` = HDR — note the *different* encoding between GET and SET. Every SET is
-verified with a follow-up GET; legacy DisplayConfig and NVAPI
-(`NvAPI_Disp_HdrColorControl`) are kept as fallbacks. See `src/hdr.rs` and
-`src/nvapi.rs`.
+verified with a follow-up GET; legacy DisplayConfig is kept as a fallback.
+See `src/hdr.rs`.
 
 ## Source layout
 
@@ -187,7 +186,6 @@ src/games.rs    process enumeration, GPU load, Known Games List, detection
 src/auto.rs     AutoSwitcher state machine shared by `watch` and the tray
 src/tray.rs     system-tray applet (icon, menu, auto tick, HDR polling)
 src/hdr.rs      DisplayConfig advanced-color GET/SET
-src/nvapi.rs    NVAPI HDR fallback (dynamic nvapi64.dll loading)
 src/util.rs     string and time helpers
 ```
 

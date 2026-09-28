@@ -103,7 +103,6 @@ fn wait_type15_state(state: u32, tries: u32, delay_ms: u64) -> bool {
 pub(crate) enum HdrMethod {
     DisplayConfig,
     Legacy,
-    Nvapi,
 }
 
 pub(crate) fn hdr_set_verified(on: bool) -> Result<HdrMethod, String> {
@@ -118,16 +117,8 @@ pub(crate) fn hdr_set_verified(on: bool) -> Result<HdrMethod, String> {
     if wait_legacy(on, 10, 150) {
         return Ok(HdrMethod::Legacy);
     }
-    if crate::nvapi::nvapi_hdr_set(crate::PRIMARY_DISPLAY, on).is_ok() {
-        let want = if on { 2u32 } else { 0u32 };
-        if wait_for(10, 100, || crate::nvapi::nvapi_hdr_mode(crate::PRIMARY_DISPLAY) == Ok(want)
-            && type15_state() == Ok(want_state)
-        ) {
-            return Ok(HdrMethod::Nvapi);
-        }
-    }
     Err(format!(
-        "HDR did not reach {} via type16 SET, legacy DisplayConfig, or NVAPI",
+        "HDR did not reach {} via type16 SET or legacy DisplayConfig",
         if on { "on" } else { "off" }
     ))
 }

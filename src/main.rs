@@ -11,7 +11,6 @@ mod config;
 mod display;
 mod games;
 mod hdr;
-mod nvapi;
 mod tray;
 mod util;
 
@@ -25,8 +24,6 @@ pub(crate) use config::{
 };
 
 pub(crate) use games::{game_active, gpu_loads, running_processes};
-
-pub(crate) const PRIMARY_DISPLAY: &str = "\\\\.\\DISPLAY1";
 
 struct Args {
     cmd: String,
@@ -215,34 +212,6 @@ fn cmd_hdr(sub: &str) {
                     i.bits_per_channel,
                     if i.color_encoding_rgb { "RGB" } else { "other" }
                 );
-                match nvapi::nvapi_hdr_mode(PRIMARY_DISPLAY) {
-                    Ok(m) => println!(
-                        "  nvapi hdrMode: {} ({})",
-                        m,
-                        match m {
-                            0 => "OFF",
-                            2 => "UHDA/HDR10",
-                            _ => "other",
-                        }
-                    ),
-                    Err(e) => println!("  nvapi hdrMode: unavailable ({})", e),
-                }
-                match nvapi::nvapi_hdr_capabilities(PRIMARY_DISPLAY) {
-                    Ok(c) => {
-                        println!(
-                            "  nvapi caps: st2084={} traditionalHdr={} edr={} driverExpand={}",
-                            c.st2084_supported,
-                            c.traditional_hdr_supported,
-                            c.edr_supported,
-                            c.driver_expand
-                        );
-                        println!(
-                            "  nvapi caps metadata: {:02X?}",
-                            c.metadata
-                        );
-                    }
-                    Err(e) => println!("  nvapi caps: unavailable ({})", e),
-                }
             }
             Ok(None) => println!("HDR: not supported on the primary display"),
             Err(e) => hdr_fail(e),
@@ -256,7 +225,6 @@ fn cmd_hdr(sub: &str) {
                     match m {
                         hdr::HdrMethod::DisplayConfig => "type16 DisplayConfig SET",
                         hdr::HdrMethod::Legacy => "legacy DisplayConfig SET",
-                        hdr::HdrMethod::Nvapi => "NVAPI",
                     }
                 ),
                 Err(e) => hdr_fail(e),
