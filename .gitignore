@@ -1,4 +1,5 @@
 target/
+.xwin-cache/
 *.ini
 *.log
 *_edid_backup_*.bin

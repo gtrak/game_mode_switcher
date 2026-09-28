@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  XWIN_CACHE_DIR: ${{ github.workspace }}/.xwin-cache
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+          components: clippy
+
+      - name: Install wine (for cross tests)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends wine64
+
+      - name: Cache cargo registry, target dir, and xwin SDK
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+            .xwin-cache
+          key: ci-xwin-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ci-xwin-
+
+      - name: Install cargo-xwin
+        run: cargo install --locked cargo-xwin
+
+      - name: Clippy (cross)
+        run: cargo xwin clippy --target x86_64-pc-windows-msvc --all-targets -- -D warnings
+
+      - name: Test (cross, under wine)
+        run: cargo xwin test --target x86_64-pc-windows-msvc
+
+      - name: Build (cross)
+        run: cargo xwin build --locked --release --target x86_64-pc-windows-msvc
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: game_mode_switcher
+          path: target/x86_64-pc-windows-msvc/release/game_mode_switcher.exe
+          if-no-files-found: error

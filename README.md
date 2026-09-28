@@ -1,5 +1,7 @@
 # game_mode_switcher
 
+[![CI](https://github.com/gtrak/game_mode_switcher/actions/workflows/ci.yml/badge.svg)](https://github.com/gtrak/game_mode_switcher/actions/workflows/ci.yml)
+
 A Windows system-tray applet + CLI that switches your display mode and HDR
 between **game mode** (high refresh) and **desktop mode** (lower refresh),
 automatically, based on which games are running.
@@ -37,6 +39,21 @@ cargo build --release
 
 Produces `target\release\game_mode_switcher.exe`. Windows only; no admin
 rights needed. `cargo test` runs 33 unit tests.
+
+### Releases
+
+Tagged builds are produced automatically by GitHub Actions using
+[cargo-xwin](https://github.com/rust-cross/cargo-xwin) — the Windows MSVC
+binary is cross-compiled on Linux runners. Push a tag to cut a release:
+
+```
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The release workflow attaches a zip with the exe, docs, and a sha256
+checksum. CI runs on every push: cross-clippy (`-D warnings`), cross-tests
+under wine, and a cross-built artifact.
 
 ## Tray applet
 
