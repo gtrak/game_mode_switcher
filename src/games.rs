@@ -122,9 +122,9 @@ impl Default for Config {
     }
 }
 
-pub(crate) const CONFIG_NAME: &str = "dsc_off.ini";
+pub(crate) const CONFIG_NAME: &str = "game_mode_switcher.ini";
 
-const CONFIG_TEMPLATE: &str = "# dsc_off configuration (used by `watch` and the tray applet)
+const CONFIG_TEMPLATE: &str = "# game_mode_switcher configuration (used by `watch` and the tray applet)
 # link bandwidth class for DSC verdicts:
 #   dp-hbr2 dp-hbr3 dp-uhbr10 dp-uhbr13 dp-uhbr20 hdmi20 hdmi21-frl3..frl6
 link = dp-uhbr13

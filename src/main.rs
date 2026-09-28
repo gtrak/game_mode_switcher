@@ -253,7 +253,7 @@ pub(crate) fn find_output<'a>(outs: &'a [Output], device: &Option<String>) -> &'
                 return o;
             }
         }
-        eprintln!("output '{}' not found; run `dsc_off list`", want);
+        eprintln!("output '{}' not found; run `game_mode_switcher list`", want);
         exit(2);
     }
     outs.first().expect("no active display outputs found")
@@ -396,7 +396,7 @@ fn cmd_watch(cfg: &Config, dry_run: bool) {
 
 fn print_usage() {
     println!(
-        "dsc_off {} - programmatic DSC toggle via display mode switching
+        "game_mode_switcher {} - programmatic DSC toggle via display mode switching
 
 DSC (Display Stream Compression) is engaged by the GPU driver per-mode whenever
 the uncompressed pixel rate exceeds the link bandwidth. Switching to a mode
@@ -404,7 +404,7 @@ that fits the link raw (uncompressed) forces a link retrain without DSC;
 switching back re-enables it. This tool automates that.
 
 USAGE:
-  dsc_off <command> [options]
+  game_mode_switcher <command> [options]
 
 COMMANDS:
   status            Show current mode + whether it likely requires DSC (default)
@@ -416,11 +416,14 @@ COMMANDS:
                     Auto-switch by game detection: while a game runs apply
                     game_mode (and game_hdr if set); grace_secs after the
                     last game exits, fall back to idle_mode/idle_hdr. Reads
-                    dsc_off.ini next to the exe (created on first run).
+                    game_mode_switcher.ini next to the exe (created on first run).
+  detect            Show the live game-detection signals: Known Games List
+                    processes (with per-process 3D GPU load), configured
+                    games, and fullscreen state. Useful for tuning the ini.
   config            Create/print the config file location
   applet            Launch the system tray applet (detached; left-click
                     toggles HDR, right-click menu: modes / Auto / Exit;
-                    same dsc_off.ini)
+                    same game_mode_switcher.ini)
   hdr [status|on|off|toggle]
                     Show or set Windows HDR on the primary display.
                     Uses the undocumented DisplayConfig type 16 advanced-color
@@ -744,7 +747,7 @@ fn main() {
             let cfg = load_or_create_config(&path);
             tray::run(cfg);
         } else {
-            let exe = env::current_exe().unwrap_or_else(|_| PathBuf::from("dsc_off.exe"));
+            let exe = env::current_exe().unwrap_or_else(|_| PathBuf::from("game_mode_switcher.exe"));
             use std::os::windows::process::CommandExt;
             const DETACHED_PROCESS: u32 = 0x0000_0008;
             match std::process::Command::new(&exe)
@@ -752,7 +755,7 @@ fn main() {
                 .creation_flags(DETACHED_PROCESS)
                 .spawn()
             {
-                Ok(_) => println!("applet launched in the system tray (log: exe dir/dsc_off_tray.log)"),
+                Ok(_) => println!("applet launched in the system tray (log: exe dir/game_mode_switcher_tray.log)"),
                 Err(e) => {
                     eprintln!("failed to spawn applet: {}", e);
                     exit(1);
@@ -813,7 +816,7 @@ fn main() {
             let target = pick_dsc_free(&outs, &device, bpp, &link);
             match target {
                 Some((o, m)) => println!(
-                    "  dsc_off candidate: {} -> {}x{} @ {} Hz (raw link, no DSC)",
+                    "  game_mode_switcher candidate: {} -> {}x{} @ {} Hz (raw link, no DSC)",
                     wide_to_string(&o.device_name),
                     m.w,
                     m.h,

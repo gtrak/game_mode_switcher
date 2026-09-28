@@ -1,7 +1,8 @@
 [package]
-name = "dsc_off"
+name = "game_mode_switcher"
 version = "0.1.0"
 edition = "2021"
+description = "Windows tray applet + CLI that switches display mode and HDR for gaming vs desktop use"
 
 [dependencies.windows]
 version = "0.62"

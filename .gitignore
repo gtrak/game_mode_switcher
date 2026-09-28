@@ -1,1 +1,4 @@
 target/
+*.ini
+*.log
+*_edid_backup_*.bin

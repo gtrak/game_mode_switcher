@@ -672,7 +672,7 @@ fn edid_backup(o: &Output, path: Option<&str>) {
     let edid = c.edid.as_deref().unwrap();
     let path = path
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(format!("dsc_off_edid_backup_{}.bin", c.pnp)));
+        .unwrap_or_else(|| PathBuf::from(format!("game_mode_switcher_edid_backup_{}.bin", c.pnp)));
     match fs::write(&path, edid) {
         Ok(_) => println!(
             "wrote {} bytes of EDID (instance {}) to {}",
@@ -725,13 +725,13 @@ fn edid_no_dsc(o: &Output, link: &str, bpp: u32) {
         }
     }
     if access_denied && wrote == 0 {
-        eprintln!("HKLM write failed - run this command from an elevated terminal (Start, search Terminal, right-click, Run as administrator), then rerun: dsc_off edid no-dsc");
+        eprintln!("HKLM write failed - run this command from an elevated terminal (Start, search Terminal, right-click, Run as administrator), then rerun: game_mode_switcher edid no-dsc");
         exit(1);
     }
     if wrote > 0 {
-        println!("wrote override to {} instance(s); next: `dsc_off edid restart-driver` (or press Win+Ctrl+Shift+B) to reload EDIDs", wrote);
-        println!("then: `dsc_off list` - DSC-dependent modes should be gone");
-        println!("revert anytime: `dsc_off edid restore` + another driver restart");
+        println!("wrote override to {} instance(s); next: `game_mode_switcher edid restart-driver` (or press Win+Ctrl+Shift+B) to reload EDIDs", wrote);
+        println!("then: `game_mode_switcher list` - DSC-dependent modes should be gone");
+        println!("revert anytime: `game_mode_switcher edid restore` + another driver restart");
         println!("note: if DSC modes still appear, nvlddmkm is reading DSC caps from live DPCD registers, which user space cannot override; use the mode-switch commands instead");
     }
 }
@@ -755,7 +755,7 @@ fn edid_restore(o: &Output) {
     if restored == 0 {
         println!("no EDID_Override present anywhere; nothing to restore");
     } else {
-        println!("now run `dsc_off edid restart-driver` (or Win+Ctrl+Shift+B) to go back to the live sink EDID");
+        println!("now run `game_mode_switcher edid restart-driver` (or Win+Ctrl+Shift+B) to go back to the live sink EDID");
     }
 
 

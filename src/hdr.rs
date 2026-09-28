@@ -186,7 +186,7 @@ pub(crate) fn hdr_probe_timeline(on: bool) -> Vec<(u64, Option<bool>)> {
 pub(crate) fn tray_log_pub(msg: &str) {
     let path = std::env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(|d| d.join("dsc_off_tray.log")));
+        .and_then(|p| p.parent().map(|d| d.join("game_mode_switcher_tray.log")));
     if let Some(p) = path {
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
             use std::io::Write;

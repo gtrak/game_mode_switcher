@@ -41,7 +41,7 @@ struct TrayState {
 fn tray_log(msg: &str) {
     let path = crate::config_path(None)
         .parent()
-        .map(|d| d.join("dsc_off_tray.log"));
+        .map(|d| d.join("game_mode_switcher_tray.log"));
     if let Some(p) = path {
         use std::io::Write;
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
@@ -144,7 +144,7 @@ fn hdr_hz_text(s: &TrayState) -> String {
         "off"
     };
     format!(
-        "dsc_off: {} | {} ({})",
+        "game_mode_switcher: {} | {} ({})",
         if s.hdr_on { "HDR" } else { "SDR" },
         target,
         mode
@@ -409,7 +409,7 @@ pub fn run(cfg: crate::Config) {
                 return;
             }
         };
-        let class_name = w!("dsc_off_tray");
+        let class_name = w!("game_mode_switcher_tray");
         let wc = WNDCLASSW {
             lpfnWndProc: Some(wndproc),
             hInstance: hinst.into(),
@@ -423,7 +423,7 @@ pub fn run(cfg: crate::Config) {
         let hwnd = match CreateWindowExW(
             WINDOW_EX_STYLE(0),
             class_name,
-            w!("dsc_off applet"),
+            w!("game_mode_switcher applet"),
             WINDOW_STYLE(0),
             0,
             0,
