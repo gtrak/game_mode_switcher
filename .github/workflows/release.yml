@@ -22,19 +22,27 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
-      - name: Cache cargo registry, target dir, and xwin SDK
+      - name: Cache cargo registry, target dir, xwin SDK, and cargo-xwin binary
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            ~/.cargo/bin/cargo-xwin.exe
             target
             .xwin-cache
-          key: release-xwin-${{ hashFiles('Cargo.lock') }}
-          restore-keys: release-xwin-
+          key: release-xwin-${{ hashFiles('Cargo.lock') }}-v2
+          restore-keys: |
+            release-xwin-${{ hashFiles('Cargo.lock') }}
+            release-xwin-
 
       - name: Install cargo-xwin
-        run: cargo install --locked cargo-xwin
+        run: |
+          if ! command -v cargo-xwin >/dev/null 2>&1; then
+            cargo install --locked cargo-xwin
+          else
+            echo "cargo-xwin restored from cache"
+          fi
 
       - name: Build (cross)
         run: cargo xwin build --locked --release --target x86_64-pc-windows-msvc

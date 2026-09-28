@@ -26,19 +26,27 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends wine64
 
-      - name: Cache cargo registry, target dir, and xwin SDK
+      - name: Cache cargo registry, target dir, xwin SDK, and cargo-xwin binary
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
+            ~/.cargo/bin/cargo-xwin.exe
             target
             .xwin-cache
-          key: ci-xwin-${{ hashFiles('Cargo.lock') }}
-          restore-keys: ci-xwin-
+          key: ci-xwin-${{ hashFiles('Cargo.lock') }}-v2
+          restore-keys: |
+            ci-xwin-${{ hashFiles('Cargo.lock') }}
+            ci-xwin-
 
       - name: Install cargo-xwin
-        run: cargo install --locked cargo-xwin
+        run: |
+          if ! command -v cargo-xwin >/dev/null 2>&1; then
+            cargo install --locked cargo-xwin
+          else
+            echo "cargo-xwin restored from cache"
+          fi
 
       - name: Clippy (cross)
         run: cargo xwin clippy --target x86_64-pc-windows-msvc --all-targets -- -D warnings
