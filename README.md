@@ -7,11 +7,9 @@ between **game mode** (high refresh) and **desktop mode** (lower refresh),
 automatically, based on which games are running.
 
 It grew out of a workaround for an NVIDIA driver bug that only manifests
-while DSC is active: switching to a display mode whose uncompressed pixel
-rate fits the link forces the GPU to retrain the link without DSC. That
-mechanism — plus Windows' undocumented advanced-color API for HDR — is what
-this tool automates. Tested on an RTX 4090 + Acer X32 X (4K240, DP 2.1) on
-Windows 11.
+while DSC is active: a display coming out of suspend can hang the driver, and 
+can require a hard reset to recover.  Tested on an RTX 4090 + Acer X32 X 
+(4K240, DP 2.1) on Windows 11.
 
 ## What it does
 
