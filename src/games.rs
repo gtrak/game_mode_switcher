@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, RECT};
@@ -268,47 +269,47 @@ pub(crate) struct DetectSignals {
     pub(crate) gpu: bool,
 }
 
+fn kgl_match(
+    kgl_names: &HashSet<String>,
+    procs: &[ProcessInfo],
+    loads: &[(u32, f64)],
+    ignore: &[String],
+    min_gpu: f64,
+) -> bool {
+    procs.iter().any(|p| {
+        let lower = p.name.to_ascii_lowercase();
+        if !kgl_names.contains(&lower) {
+            return false;
+        }
+        if ignore.iter().any(|g| p.name.eq_ignore_ascii_case(g)) {
+            return false;
+        }
+        let load = loads
+            .iter()
+            .find(|(pid, _)| *pid == p.pid)
+            .map(|(_, v)| *v)
+            .unwrap_or(0.0);
+        load >= min_gpu
+    })
+}
+
 pub(crate) fn detect_signals(cfg: &Config, procs: &[ProcessInfo]) -> DetectSignals {
     let named = cfg
         .games
         .iter()
         .any(|g| procs.iter().any(|p| p.name.eq_ignore_ascii_case(g)));
-    let mut kgl = false;
-    // early-exit flag: when the KGL branch resolves (ignored match or no
-    // match), game_active returns before the gpu_load_detect check
-    let mut kgl_early_exit = false;
     let kgl_list = known_game_exes();
-    if !kgl_list.is_empty() && cfg.kgl_min_gpu > 0 {
+    let kgl = if !kgl_list.is_empty() && cfg.kgl_min_gpu > 0 {
         let loads = gpu_loads().unwrap_or_default();
-        if let Some((matched_pid, matched_name)) = procs
-            .iter()
-            .find(|p| kgl_list.iter().any(|k| p.name.eq_ignore_ascii_case(k)))
-            .map(|p| (p.pid, p.name.clone()))
-        {
-            if cfg.games_ignore.iter().any(|g| matched_name.eq_ignore_ascii_case(g)) {
-                kgl_early_exit = true;
-            } else {
-                let load = loads
-                    .iter()
-                    .find(|(pid, _)| *pid == matched_pid)
-                    .map(|(_, v)| *v)
-                    .unwrap_or(0.0);
-                if load >= cfg.kgl_min_gpu as f64 {
-                    kgl = true;
-                }
-            }
-        } else {
-            kgl_early_exit = true;
-        }
-    }
+        let kgl_names: HashSet<String> = kgl_list.into_iter().collect();
+        kgl_match(&kgl_names, procs, &loads, &cfg.games_ignore, cfg.kgl_min_gpu as f64)
+    } else {
+        false
+    };
     let fullscreen = cfg.fullscreen_detect && detect_fullscreen_game();
-    let gpu = if !kgl_early_exit {
-        if cfg.gpu_load_detect {
-            if let Ok(loads) = gpu_loads() {
-                loads.first().map(|(_, v)| *v).unwrap_or(0.0) >= cfg.gpu_threshold as f64
-            } else {
-                false
-            }
+    let gpu = if cfg.gpu_load_detect {
+        if let Ok(loads) = gpu_loads() {
+            loads.first().map(|(_, v)| *v).unwrap_or(0.0) >= cfg.gpu_threshold as f64
         } else {
             false
         }
@@ -326,4 +327,55 @@ pub(crate) fn detect_signals(cfg: &Config, procs: &[ProcessInfo]) -> DetectSigna
 pub(crate) fn game_active(cfg: &Config, procs: &[ProcessInfo]) -> bool {
     let s = detect_signals(cfg, procs);
     s.named || s.kgl || s.fullscreen || s.gpu
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn names(items: &[&str]) -> HashSet<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn proc(pid: u32, name: &str) -> ProcessInfo {
+        ProcessInfo {
+            pid,
+            name: name.to_string(),
+        }
+    }
+
+    #[test]
+    fn kgl_match_two_procs_one_idle_one_active() {
+        // regression: roblox (idle, ~0%) is listed before apex (active, 15%);
+        // any-match must still detect apex
+        let kgl = names(&["robloxplayerbeta.exe", "r5apex_dx12.exe"]);
+        let procs = vec![proc(100, "RobloxPlayerBeta.exe"), proc(200, "r5apex_dx12.exe")];
+        let loads: Vec<(u32, f64)> = vec![(100, 0.0), (200, 15.0)];
+        assert!(kgl_match(&kgl, &procs, &loads, &[], 5.0));
+    }
+
+    #[test]
+    fn kgl_match_ignored_proc_is_false() {
+        let kgl = names(&["robloxplayerbeta.exe"]);
+        let procs = vec![proc(100, "RobloxPlayerBeta.exe")];
+        let loads: Vec<(u32, f64)> = vec![(100, 15.0)];
+        let ignore = vec!["robloxplayerbeta.exe".to_string()];
+        assert!(!kgl_match(&kgl, &procs, &loads, &ignore, 5.0));
+    }
+
+    #[test]
+    fn kgl_match_below_threshold_is_false() {
+        let kgl = names(&["r5apex_dx12.exe"]);
+        let procs = vec![proc(200, "r5apex_dx12.exe")];
+        let loads: Vec<(u32, f64)> = vec![(200, 3.0)];
+        assert!(!kgl_match(&kgl, &procs, &loads, &[], 5.0));
+    }
+
+    #[test]
+    fn kgl_match_no_kgl_procs_is_false() {
+        let kgl = names(&["r5apex_dx12.exe"]);
+        let procs = vec![proc(300, "chrome.exe")];
+        let loads: Vec<(u32, f64)> = vec![(300, 90.0)];
+        assert!(!kgl_match(&kgl, &procs, &loads, &[], 5.0));
+    }
 }
