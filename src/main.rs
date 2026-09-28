@@ -16,13 +16,11 @@ use windows::Win32::Graphics::Gdi::{
 
 const BLANKING_FACTOR: f64 = 1.12;
 
-mod edid;
 mod games;
 mod hdr;
 mod nvapi;
 mod tray;
 
-use edid::edid_main;
 pub(crate) use games::{
     config_path, detect_fullscreen_game, game_active, gpu_loads, load_or_create_config,
     mode_spec_label, pick_mode, running_processes, ModeSpec, CONFIG_NAME, Config,
@@ -39,7 +37,6 @@ pub(crate) struct Output {
     pub(crate) device_name: Vec<u16>,
     pub(crate) adapter: String,
     pub(crate) monitor: String,
-    pub(crate) monitor_device_id: String,
     pub(crate) current: Option<Mode>,
     pub(crate) modes: Vec<Mode>,
 }
@@ -99,11 +96,11 @@ pub(crate) fn enumerate_outputs() -> Vec<Output> {
                 cb: std::mem::size_of::<DISPLAY_DEVICEW>() as u32,
                 ..Default::default()
             };
-            let (monitor, monitor_device_id) = unsafe {
+            let monitor = unsafe {
                 if EnumDisplayDevicesW(pcw(&dd.DeviceName), 0, &mut mon, 0).as_bool() {
-                    (wide_to_string(&mon.DeviceString), wide_to_string(&mon.DeviceID))
+                    wide_to_string(&mon.DeviceString)
                 } else {
-                    (String::from("<unknown monitor>"), String::new())
+                    String::from("<unknown monitor>")
                 }
             };
             let mut current = None;
@@ -168,7 +165,6 @@ pub(crate) fn enumerate_outputs() -> Vec<Output> {
                 device_name: dd.DeviceName.to_vec(),
                 adapter: wide_to_string(&dd.DeviceString),
                 monitor,
-                monitor_device_id,
                 current,
                 modes,
             });
@@ -431,16 +427,6 @@ COMMANDS:
                     and NVAPI as fallbacks. Diagnostics: hdr probe|probe2|
                     dump15|set15 V SIZE|types
 
-EDID MECHANISM (overrides the sink EDID the driver reads):
-  edid status       Inspect cached EDID + any active override
-  edid backup [f]   Save the current EDID binary to a file
-  edid no-dsc       Write an EDID_Override with DSC-dependent data removed
-                    (needs an elevated terminal; revert with `edid restore`)
-  edid restore      Delete the EDID_Override (back to live sink EDID)
-  edid restart-driver
-                    Restart the graphics driver via Win+Ctrl+Shift+B keystroke
-                    (required after no-dsc/restore for changes to take effect)
-
 OPTIONS:
   --device NAME     Output to act on, e.g. DISPLAY1 (default: first output)
   --link TYPE       Link bandwidth assumption:
@@ -454,24 +440,13 @@ OPTIONS:
 NOTES:
   `off`/`on` persist via the registry; `test` is temporary.
   The DSC verdict is a bandwidth heuristic, not a driver query: Windows exposes
-  no public API to read the sink's DSC state.
-  `edid no-dsc` needs admin (HKLM write) and only applies after a driver restart.
-  edid subcommands accept --device/--link/--bpp like the rest of the tool.",
+  no public API to read the sink's DSC state.",
         env!("CARGO_PKG_VERSION")
     );
 }
 
 fn main() {
     let raw: Vec<String> = env::args().skip(1).collect();
-    if raw.first().map(|s| s.as_str()) == Some("edid") {
-        let outs = enumerate_outputs();
-        if outs.is_empty() {
-            eprintln!("no active display outputs found");
-            exit(1);
-        }
-        edid_main(&raw[1..], &outs);
-        return;
-    }
     if raw.first().map(|s| s.as_str()) == Some("hdr") {
         let sub = raw.get(1).map(|s| s.as_str()).unwrap_or("status");
         match sub {
