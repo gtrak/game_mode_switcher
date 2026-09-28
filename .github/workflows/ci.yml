@@ -8,9 +8,6 @@ on:
 env:
   CARGO_TERM_COLOR: always
   XWIN_CACHE_DIR: ${{ github.workspace }}/.xwin-cache
-  # ubuntu-24.04's wine64 package installs /usr/bin/wine64 but no `wine` wrapper;
-  # cargo-xwin only defaults the runner to `wine` when this var is unset
-  CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER: wine64
 
 jobs:
   ci:
@@ -27,7 +24,11 @@ jobs:
       - name: Install wine (for cross tests)
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends wine64
+          sudo apt-get install -y --no-install-recommends wine \
+            || sudo apt-get install -y --no-install-recommends wine64
+          echo "--- wine binaries on runner ---"
+          ls -l /usr/bin/wine* 2>/dev/null || true
+          ls -l /usr/lib/wine/ 2>/dev/null || true
 
       - name: Cache cargo registry, target dir, xwin SDK, and cargo-xwin binary
         uses: actions/cache@v4
@@ -55,7 +56,20 @@ jobs:
         run: cargo xwin clippy --target x86_64-pc-windows-msvc --all-targets -- -D warnings
 
       - name: Test (cross, under wine)
-        run: cargo xwin test --target x86_64-pc-windows-msvc
+        run: |
+          WINE_BIN="$(command -v wine || command -v wine64 || true)"
+          if [ -z "$WINE_BIN" ]; then
+            for c in /usr/lib/wine/wine /usr/lib/wine/wine64; do
+              [ -x "$c" ] && WINE_BIN="$c" && break
+            done
+          fi
+          if [ -z "$WINE_BIN" ]; then
+            echo "::error::no wine binary found on runner"
+            exit 1
+          fi
+          echo "using wine runner: $WINE_BIN"
+          CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER="$WINE_BIN" \
+            cargo xwin test --target x86_64-pc-windows-msvc
 
       - name: Build (cross)
         run: cargo xwin build --locked --release --target x86_64-pc-windows-msvc
