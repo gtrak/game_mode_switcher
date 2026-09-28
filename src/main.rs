@@ -325,13 +325,13 @@ fn cmd_watch(cfg: &Config, dry_run: bool) {
             last_seen = Some(Instant::now());
         }
         let target_hz = if active {
-            Some(cfg.game_hz)
+            Some(cfg.auto_game_hz)
         } else if last_seen
             .map(|t| t.elapsed().as_secs() >= cfg.grace_secs)
             .unwrap_or(false)
         {
             last_seen = None;
-            Some(cfg.idle_hz)
+            Some(cfg.auto_idle_hz)
         } else {
             None
         };
@@ -399,8 +399,8 @@ COMMANDS:
   test [--secs N]   Apply DSC-off mode for N seconds, then restore (default 10)
   watch [--dry-run] [--config FILE]
                     Auto-switch by game detection: while a configured game
-                    process runs, apply game_hz; grace_secs after the last
-                    game exits, fall back to idle_hz. Reads dsc_off.ini
+                    process runs, apply auto_game_hz; grace_secs after the last
+                    game exits, fall back to auto_idle_hz. Reads dsc_off.ini
                     next to the exe (created on first run).
   config            Create/print the config file location
   applet            Launch the system tray applet (detached; icon menu:

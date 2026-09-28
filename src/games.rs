@@ -25,8 +25,9 @@ pub(crate) struct Config {
     pub(crate) device: Option<String>,
     pub(crate) poll_secs: u64,
     pub(crate) grace_secs: u64,
-    pub(crate) game_hz: u32,
-    pub(crate) idle_hz: u32,
+    pub(crate) manual_modes: Vec<u32>,
+    pub(crate) auto_game_hz: u32,
+    pub(crate) auto_idle_hz: u32,
     pub(crate) fullscreen_detect: bool,
     pub(crate) gpu_load_detect: bool,
     pub(crate) gpu_threshold: u32,
@@ -44,8 +45,9 @@ impl Default for Config {
             device: None,
             poll_secs: 2,
             grace_secs: 15,
-            game_hz: 240,
-            idle_hz: 120,
+            manual_modes: vec![240, 120],
+            auto_game_hz: 240,
+            auto_idle_hz: 120,
             games: Vec::new(),
             games_ignore: Vec::new(),
             fullscreen_detect: false,
@@ -69,12 +71,19 @@ bpp = 24
 # device = DISPLAY1
 # polling interval for game detection, seconds
 poll_secs = 2
-# seconds after the last game exits before falling back to idle_hz
+# seconds after the last game exits before Auto falls back to auto_idle_hz
 grace_secs = 15
-# refresh targets in Hz; if a target mode does not exist the closest
-# lower-refresh mode at the same resolution is used instead
-game_hz = 240
-idle_hz = 120
+
+# ----- tray applet -----
+# refresh choices shown in the right-click menu (Hz, comma separated);
+# if a value has no exact mode, the closest lower-refresh mode at the same
+# resolution is used instead
+manual_modes = 240, 120
+# what Auto applies when a game is detected / when idle
+auto_game_hz = 240
+auto_idle_hz = 120
+
+# ----- game detection -----
 # extra game executables to watch for, comma separated, case-insensitive
 # NOTE: Windows' own Known Games List (GameConfigStore, populated by Game
 # Bar/Game Mode) is matched automatically - you only need to add exes here
@@ -90,17 +99,15 @@ games_ignore =
 kgl_min_gpu = 5
 
 # ALSO treat the foreground window as a game when it covers the whole
-# monitor without a title bar (can false-positive on fullscreen video;
-# the Known Games List below makes this unnecessary in most cases)
+# monitor without a title bar (can false-positive on fullscreen video)
 fullscreen_detect = false
 
-# ALSO treat high 3D GPU load as gaming (can false-positive on browsers;
-# the Known Games List below makes this unnecessary in most cases)
+# ALSO treat high 3D GPU load as gaming (can false-positive on browsers)
 gpu_load_detect = false
 # minimum 3D engine utilization (%) to count as gaming
 gpu_threshold = 35
 
-# auto-detection runs on applet launch (no need to re-enable after reboot)
+# Auto runs on applet launch (no need to re-enable after reboot)
 auto_on_start = true
 ";
 
@@ -150,8 +157,14 @@ pub(crate) fn load_or_create_config(path: &Path) -> Config {
             }
             "poll_secs" => cfg.poll_secs = v.parse().unwrap_or(2),
             "grace_secs" => cfg.grace_secs = v.parse().unwrap_or(15),
-            "game_hz" => cfg.game_hz = v.parse().unwrap_or(240),
-            "idle_hz" => cfg.idle_hz = v.parse().unwrap_or(120),
+            "manual_modes" => {
+                cfg.manual_modes = v
+                    .split(',')
+                    .filter_map(|s| s.trim().parse().ok())
+                    .collect()
+            }
+            "auto_game_hz" | "game_hz" => cfg.auto_game_hz = v.parse().unwrap_or(240),
+            "auto_idle_hz" | "idle_hz" => cfg.auto_idle_hz = v.parse().unwrap_or(120),
             "fullscreen_detect" => cfg.fullscreen_detect = v.parse().unwrap_or(true),
             "gpu_load_detect" => cfg.gpu_load_detect = v.parse().unwrap_or(true),
             "gpu_threshold" => cfg.gpu_threshold = v.parse().unwrap_or(35),
