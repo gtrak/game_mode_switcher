@@ -4,6 +4,7 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+use std::time::Instant;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, RECT};
 use windows::Win32::Graphics::Gdi::{
@@ -29,6 +30,8 @@ pub(crate) struct Config {
     pub(crate) fullscreen_detect: bool,
     pub(crate) gpu_load_detect: bool,
     pub(crate) gpu_threshold: u32,
+    pub(crate) gpu_sustain_secs: u64,
+    pub(crate) gpu_fs_threshold: u32,
     pub(crate) auto_on_start: bool,
     pub(crate) games: Vec<String>,
 }
@@ -47,6 +50,8 @@ impl Default for Config {
             fullscreen_detect: true,
             gpu_load_detect: true,
             gpu_threshold: 35,
+            gpu_sustain_secs: 10,
+            gpu_fs_threshold: 15,
             auto_on_start: true,
         }
     }
@@ -70,17 +75,21 @@ grace_secs = 15
 # lower-refresh mode at the same resolution is used instead
 game_hz = 240
 idle_hz = 120
-# game executables to watch for, comma separated, case-insensitive
+# extra game executables to watch for, comma separated, case-insensitive
+# NOTE: Windows' own Known Games List (GameConfigStore, populated by Game
+# Bar/Game Mode) is matched automatically - you only need to add exes here
+# that Windows has not classified yet
 # example: games = cyberpunk2077.exe, eldenring.exe, hfw.exe
 games =
 
-# also treat the foreground window as a game when it covers the whole
-# monitor without a title bar (exclusive or borderless fullscreen)
-fullscreen_detect = true
+# ALSO treat the foreground window as a game when it covers the whole
+# monitor without a title bar (can false-positive on fullscreen video;
+# the Known Games List below makes this unnecessary in most cases)
+fullscreen_detect = false
 
-# treat sustained 3D GPU load as gaming (catches windowed games and any
-# launcher, no per-game config needed)
-gpu_load_detect = true
+# ALSO treat high 3D GPU load as gaming (can false-positive on browsers;
+# the Known Games List below makes this unnecessary in most cases)
+gpu_load_detect = false
 # minimum 3D engine utilization (%) to count as gaming
 gpu_threshold = 35
 
@@ -178,6 +187,107 @@ pub(crate) fn running_processes() -> Vec<String> {
         }
     }
     out
+}
+
+const KGL_PATH: &str = r"System\GameConfigStore\Children";
+const KGL_TTL: Duration = Duration::from_secs(300);
+
+fn kgl_cache() -> &'static std::sync::Mutex<Option<(Instant, Vec<String>)>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<Option<(Instant, Vec<String>)>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+pub(crate) fn known_game_exes() -> Vec<String> {
+    if let Ok(guard) = kgl_cache().lock() {
+        if let Some((t, list)) = guard.as_ref() {
+            if t.elapsed() < KGL_TTL {
+                return list.clone();
+            }
+        }
+    }
+    let mut list = Vec::new();
+    unsafe {
+        use windows::Win32::Foundation::ERROR_SUCCESS;
+        use windows::Win32::System::Registry::{
+            RegCloseKey, RegEnumKeyW, RegOpenKeyExW, RegQueryValueExW, HKEY_CURRENT_USER,
+            HKEY, KEY_READ, REG_VALUE_TYPE,
+        };
+        let sub = to_widez(KGL_PATH);
+        let mut hk = HKEY::default();
+        if RegOpenKeyExW(HKEY_CURRENT_USER, pcw(&sub), Some(0), KEY_READ, &mut hk)
+            != ERROR_SUCCESS
+        {
+            let _ = kgl_cache().lock().map(|mut c| *c = None);
+            return list;
+        }
+        let mut idx = 0u32;
+        let mut name_buf = [0u16; 256];
+        loop {
+            if RegEnumKeyW(hk, idx, Some(&mut name_buf)) != ERROR_SUCCESS {
+                break;
+            }
+            let end = name_buf.iter().position(|&c| c == 0).unwrap_or(0);
+            if end > 0 {
+                let child = String::from_utf16_lossy(&name_buf[..end]);
+                let child_sub = to_widez(&format!("{}\\{}", KGL_PATH, child));
+                let mut ck = HKEY::default();
+                if RegOpenKeyExW(HKEY_CURRENT_USER, pcw(&child_sub), Some(0), KEY_READ, &mut ck)
+                    == ERROR_SUCCESS
+                {
+                    let val = to_widez("MatchedExeFullPath");
+                    let mut size = 0u32;
+                    let mut vtype = REG_VALUE_TYPE::default();
+                    if RegQueryValueExW(
+                        ck,
+                        pcw(&val),
+                        None,
+                        Some(&mut vtype),
+                        None,
+                        Some(&mut size),
+                    ) == ERROR_SUCCESS
+                        && size > 2
+                    {
+                        let mut buf = vec![0u8; size as usize];
+                        let mut got = size;
+                        if RegQueryValueExW(
+                            ck,
+                            pcw(&val),
+                            None,
+                            None,
+                            Some(buf.as_mut_ptr()),
+                            Some(&mut got),
+                        ) == ERROR_SUCCESS
+                        {
+                            let words: Vec<u16> = buf[..(got as usize & !1)]
+                                .chunks_exact(2)
+                                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                                .collect();
+                            let wend =
+                                words.iter().position(|&c| c == 0).unwrap_or(words.len());
+                            let full = String::from_utf16_lossy(&words[..wend]);
+                            if let Some(name) = full.rsplit('\\').next() {
+                                let name = name.to_ascii_lowercase();
+                                if name.ends_with(".exe") && !list.contains(&name) {
+                                    list.push(name);
+                                }
+                            }
+                        }
+                    }
+                    let _ = RegCloseKey(ck);
+                }
+            }
+            idx += 1;
+            if idx >= 4096 {
+                break;
+            }
+        }
+        let _ = RegCloseKey(hk);
+    }
+    let _ = kgl_cache().lock().map(|mut c| {
+        *c = Some((Instant::now(), list.clone()));
+    });
+    list
 }
 
 pub(crate) fn pick_by_freq<'a>(
@@ -351,6 +461,14 @@ pub(crate) fn game_active(cfg: &Config, procs: &[String]) -> bool {
     {
         return true;
     }
+    let kgl = known_game_exes();
+    if !kgl.is_empty()
+        && procs
+            .iter()
+            .any(|p| kgl.iter().any(|k| p.eq_ignore_ascii_case(k)))
+    {
+        return true;
+    }
     if cfg.fullscreen_detect && detect_fullscreen_game() {
         return true;
     }
@@ -362,7 +480,5 @@ pub(crate) fn game_active(cfg: &Config, procs: &[String]) -> bool {
             let _ = pid;
         }
     }
-
-
     false
 }

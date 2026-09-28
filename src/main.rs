@@ -652,15 +652,26 @@ fn main() {
     if raw.first().map(|s| s.as_str()) == Some("detect") {
         let path = config_path(None);
         let cfg = load_or_create_config(&path);
+        let kgl0 = games::known_game_exes();
+        println!(
+            "detect: {} known-game exe(s) from GameConfigStore, {} configured",
+            kgl0.len(),
+            cfg.games.len()
+        );
         loop {
             let procs = running_processes();
             let named = cfg
                 .games
                 .iter()
                 .any(|g| procs.iter().any(|p| p.eq_ignore_ascii_case(g)));
+            let kgl = games::known_game_exes();
+            let kgl_hit = !kgl.is_empty()
+                && procs
+                    .iter()
+                    .any(|p| kgl.iter().any(|k| p.eq_ignore_ascii_case(k)));
             let fs = detect_fullscreen_game();
             let gpu = match gpu_game_load() {
-                    Ok(v) => { if v.is_none() { println!("gpu: no engtype_3d instances above 0 (raw path OK)"); } v },
+                Ok(v) => v,
                 Err(e) => {
                     println!("[{}] gpu error: {}", unix_ts(), e);
                     None
@@ -668,9 +679,10 @@ fn main() {
             };
             let gpu_hit = gpu.map(|(_, v)| v >= cfg.gpu_threshold as f64).unwrap_or(false);
             println!(
-                "[{}] named={} fullscreen={} gpu={}",
+                "[{}] named={} kgl={} fullscreen={} gpu={}",
                 unix_ts(),
                 named,
+                kgl_hit,
                 fs,
                 match (&gpu, gpu_hit) {
                     (Some((pid, v)), _) =>
