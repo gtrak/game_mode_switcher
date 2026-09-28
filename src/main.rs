@@ -24,6 +24,8 @@ pub(crate) use games::{
     mode_spec_label, pick_mode, running_processes, ModeSpec, CONFIG_NAME, Config,
 };
 
+pub(crate) const PRIMARY_DISPLAY: &str = "\\\\.\\DISPLAY1";
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Mode {
     pub(crate) w: u32,
@@ -329,6 +331,11 @@ fn cmd_watch(cfg: &Config, dry_run: bool) {
     }
 }
 
+fn hdr_fail(e: String) -> ! {
+    eprintln!("{}", e);
+    exit(1);
+}
+
 fn print_usage() {
     println!(
         "game_mode_switcher {} - tray applet + CLI for display mode and HDR switching
@@ -355,12 +362,8 @@ COMMANDS:
   applet            Launch the system tray applet (detached; left-click
                     toggles HDR, right-click menu: modes / Auto / Exit;
                     same game_mode_switcher.ini)
-  hdr [status|on|off|toggle]
-                    Show or set Windows HDR on the primary display.
-                    Uses the undocumented DisplayConfig type 16 advanced-color
-                    SET (verified against type 15), with legacy DisplayConfig
-                    and NVAPI as fallbacks. Diagnostics: hdr probe|probe2|
-                    dump15|set15 V SIZE|types
+   hdr [status|on|off|toggle]
+                     Show or set Windows HDR on the primary display.
 
 OPTIONS:
   --device NAME     Output to act on, e.g. DISPLAY1 (default: first output)",
@@ -386,7 +389,7 @@ fn main() {
                         i.bits_per_channel,
                         if i.color_encoding_rgb { "RGB" } else { "other" }
                     );
-                    match nvapi::nvapi_hdr_mode("\\\\.\\DISPLAY1") {
+                    match nvapi::nvapi_hdr_mode(PRIMARY_DISPLAY) {
                         Ok(m) => println!(
                             "  nvapi hdrMode: {} ({})",
                             m,
@@ -398,7 +401,7 @@ fn main() {
                         ),
                         Err(e) => println!("  nvapi hdrMode: unavailable ({})", e),
                     }
-                    match nvapi::nvapi_hdr_capabilities("\\\\.\\DISPLAY1") {
+                    match nvapi::nvapi_hdr_capabilities(PRIMARY_DISPLAY) {
                         Ok(c) => {
                             println!(
                                 "  nvapi caps: st2084={} traditionalHdr={} edr={} driverExpand={}",
@@ -416,10 +419,7 @@ fn main() {
                     }
                 }
                 Ok(None) => println!("HDR: not supported on the primary display"),
-                Err(e) => {
-                    eprintln!("{}", e);
-                    exit(1);
-                }
+                Err(e) => hdr_fail(e),
             },
             "on" | "off" => {
                 let on = sub == "on";
@@ -433,128 +433,15 @@ fn main() {
                             hdr::HdrMethod::Nvapi => "NVAPI",
                         }
                     ),
-                    Err(e) => {
-                        eprintln!("{}", e);
-                        exit(1);
-                    }
+                    Err(e) => hdr_fail(e),
                 }
-            }
-            "set15" => {
-                let value: u32 = raw.get(2).and_then(|v| v.parse().ok()).unwrap_or(2);
-                let size: u32 = raw.get(3).and_then(|v| v.parse().ok()).unwrap_or(36);
-                match hdr::set_type15(value, size) {
-                    Ok(()) => {
-                        std::thread::sleep(std::time::Duration::from_millis(500));
-                        println!(
-                            "set15({} bytes -> value {}) applied; state now {:?}, nvapi {:?}",
-                            size,
-                            value,
-                            hdr::type15_state(),
-                            nvapi::nvapi_hdr_mode("\\\\.\\DISPLAY1")
-                        );
-                    }
-                    Err(e) => {
-                        eprintln!("{}", e);
-                        exit(1);
-                    }
-                }
-            }
-            "dump15" => match hdr::dump_type15() {
-                Ok(b) => println!(
-                    "type15 (36 bytes): {}",
-                    b.iter().map(|x| format!("{:02X}", x)).collect::<String>()
-                ),
-                Err(e) => {
-                    eprintln!("{}", e);
-                    exit(1);
-                }
-            },
-            "types" => {
-                for (ty, sz, _err) in hdr::probe_device_info_types() {
-                    if sz > 0 {
-                        println!("type {:>3}: OK at size {}", ty, sz);
-                    }
-                }
-            }
-            "probe" => {
-                let cur = match hdr::hdr_enabled() {
-                    Some(v) => v,
-                    None => {
-                        eprintln!("HDR not supported");
-                        exit(1);
-                    }
-                };
-                let want = !cur;
-                println!(
-                    "probe: nvapi SET({}) from mode {}, 10s dual-oracle timeline:",
-                    want,
-                    if cur { 2 } else { 0 }
-                );
-                if let Err(e) = nvapi::nvapi_hdr_set("\\\\.\\DISPLAY1", want) {
-                    println!("  set error: {}", e);
-                }
-                for i in 0..20 {
-                    let m = nvapi::nvapi_hdr_mode("\\\\.\\DISPLAY1");
-                    let os = hdr::hdr_state().ok().flatten().map(|s| s.enabled);
-                    println!(
-                        "  +{:>5} ms: nvapi={:?} os_get={:?}",
-                        500 * (i + 1),
-                        m,
-                        os
-                    );
-                    std::thread::sleep(std::time::Duration::from_millis(500));
-                }
-                println!("  --- watching 90s for delayed reversion (changes only) ---");
-                let mut last = nvapi::nvapi_hdr_mode("\\\\.\\DISPLAY1");
-                for i in 0..90 {
-                    std::thread::sleep(std::time::Duration::from_secs(1));
-                    let m = nvapi::nvapi_hdr_mode("\\\\.\\DISPLAY1");
-                    if m != last {
-                        println!("  +{} s: nvapi {} -> {:?}", 10 + i + 1, last.unwrap_or(99), m);
-                        last = m;
-                    }
-                }
-                println!("  watch done, final nvapi={:?}", last);
-            }
-            "probe2" => {
-                let cur = match hdr::hdr_state() {
-                    Ok(Some(i)) => i.enabled,
-                    Ok(None) => {
-                        eprintln!("HDR not supported");
-                        exit(1);
-                    }
-                    Err(e) => {
-                        eprintln!("{}", e);
-                        exit(1);
-                    }
-                };
-                let want = !cur;
-                println!(
-                    "probe2: attempting HDR -> {} (current {}), GET timeline after SET:",
-                    want, cur
-                );
-                for (ms, state) in hdr::hdr_probe_timeline(want) {
-                    println!(
-                        "  +{:>4} ms: {}",
-                        ms,
-                        match state {
-                            Some(true) => "on",
-                            Some(false) => "off",
-                            None => "?",
-                        }
-                    );
-                }
-                println!("final: {:?}", hdr::hdr_state().map(|r| r.map(|i| i.enabled)));
             }
             "toggle" => match hdr::hdr_enabled() {
                 Some(cur) => {
                     let on = !cur;
                     match hdr::hdr_set_verified(on) {
                         Ok(_) => println!("HDR {}", if on { "on" } else { "off" }),
-                        Err(e) => {
-                            eprintln!("{}", e);
-                            exit(1);
-                        }
+                        Err(e) => hdr_fail(e),
                     }
                 }
                 None => println!("HDR: not supported on the primary display"),

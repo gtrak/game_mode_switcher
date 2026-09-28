@@ -114,11 +114,11 @@ pub(crate) fn hdr_set_verified(on: bool) -> Result<HdrMethod, String> {
     if wait_legacy(on, 10, 150) {
         return Ok(HdrMethod::Legacy);
     }
-    if crate::nvapi::nvapi_hdr_set("\\\\.\\DISPLAY1", on).is_ok() {
+    if crate::nvapi::nvapi_hdr_set(crate::PRIMARY_DISPLAY, on).is_ok() {
         let want = if on { 2u32 } else { 0u32 };
         for _ in 0..10 {
             std::thread::sleep(std::time::Duration::from_millis(100));
-            if crate::nvapi::nvapi_hdr_mode("\\\\.\\DISPLAY1") == Ok(want)
+            if crate::nvapi::nvapi_hdr_mode(crate::PRIMARY_DISPLAY) == Ok(want)
                 && type15_state() == Ok(want_state)
             {
                 return Ok(HdrMethod::Nvapi);
@@ -172,33 +172,6 @@ pub(crate) fn hdr_enabled() -> Option<bool> {
     }
 }
 
-pub(crate) fn hdr_probe_timeline(on: bool) -> Vec<(u64, Option<bool>)> {
-    let mut timeline = Vec::new();
-    let _ = hdr_set(on);
-    for i in 0..12 {
-        std::thread::sleep(std::time::Duration::from_millis(250));
-        timeline.push((250 * (i + 1), enabled_now()));
-    }
-    timeline
-}
-
-#[allow(dead_code)]
-pub(crate) fn tray_log_pub(msg: &str) {
-    let path = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("game_mode_switcher_tray.log")));
-    if let Some(p) = path {
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
-            use std::io::Write;
-            let _ = writeln!(f, "[{}] hdr: {}", crate::unix_ts(), msg);
-        }
-    }
-}
-
-fn enabled_now() -> Option<bool> {
-    hdr_enabled()
-}
-
 pub(crate) fn dump_type15() -> Result<Vec<u8>, String> {
     let target = primary_target()?;
     unsafe {
@@ -245,38 +218,4 @@ pub(crate) fn set_type15(value: u32, size: u32) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-pub(crate) fn probe_device_info_types() -> Vec<(i32, u32, i32)> {
-    let target = match primary_target() {
-        Ok(t) => t,
-        Err(_) => return Vec::new(),
-    };
-    let sizes = [
-        16u32, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60, 64, 72, 80, 96, 128,
-    ];
-    let mut results = Vec::new();
-    unsafe {
-        for ty in 0..0x40i32 {
-            let mut hit = false;
-            for sz in sizes {
-                let mut buf = [0u8; 128];
-                let header = buf.as_mut_ptr() as *mut DISPLAYCONFIG_DEVICE_INFO_HEADER;
-                (*header).r#type = DISPLAYCONFIG_DEVICE_INFO_TYPE(ty);
-                (*header).size = sz;
-                (*header).adapterId = target.0;
-                (*header).id = target.1;
-                let err = DisplayConfigGetDeviceInfo(header);
-                if err == 0 {
-                    results.push((ty, sz, err));
-                    hit = true;
-                    break;
-                }
-            }
-            if !hit {
-                results.push((ty, 0, -1));
-            }
-        }
-    }
-    results
 }
