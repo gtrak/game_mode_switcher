@@ -17,6 +17,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 const TRAY_ID: u32 = 1;
 const CB_MSG: u32 = WM_APP + 1;
 const ID_AUTO: usize = 2001;
+const ID_AUTOSTART: usize = 2002;
 const ID_MANUAL0: usize = 2100;
 const ID_EXIT: usize = 2999;
 const TIMER_ID: usize = 1;
@@ -146,6 +147,91 @@ fn hdr_hz_text(s: &TrayState) -> String {
         target,
         mode
     )
+}
+
+const RUN_SUBKEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+const AUTOSTART_VALUE: &str = "game_mode_switcher";
+
+/// True if the HKCU Run key holds a non-empty `game_mode_switcher` value.
+fn autostart_enabled() -> bool {
+    unsafe {
+        use windows::Win32::Foundation::ERROR_SUCCESS;
+        use windows::Win32::System::Registry::{
+            RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_READ,
+        };
+        let sub = crate::to_widez(RUN_SUBKEY);
+        let val = crate::to_widez(AUTOSTART_VALUE);
+        let mut hk = HKEY::default();
+        if RegOpenKeyExW(HKEY_CURRENT_USER, crate::pcw(&sub), Some(0), KEY_READ, &mut hk)
+            != ERROR_SUCCESS
+        {
+            return false;
+        }
+        let mut size = 0u32;
+        let found = RegQueryValueExW(
+            hk,
+            crate::pcw(&val),
+            None,
+            None,
+            None,
+            Some(&mut size),
+        ) == ERROR_SUCCESS
+            && size > 2;
+        let _ = RegCloseKey(hk);
+        found
+    }
+}
+
+/// Write (on) or delete (off) the `game_mode_switcher` value under the HKCU Run key.
+fn autostart_set(on: bool) -> Result<(), String> {
+    unsafe {
+        use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
+        use windows::Win32::System::Registry::{
+            RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegSetValueExW, HKEY,
+            HKEY_CURRENT_USER, KEY_SET_VALUE, REG_SZ,
+        };
+        let sub = crate::to_widez(RUN_SUBKEY);
+        let val = crate::to_widez(AUTOSTART_VALUE);
+        let mut hk = HKEY::default();
+        let st = RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            crate::pcw(&sub),
+            Some(0),
+            KEY_SET_VALUE,
+            &mut hk,
+        );
+        if st != ERROR_SUCCESS {
+            return Err(format!("RegOpenKeyExW failed with error {}", st.0));
+        }
+        let result = if on {
+            let exe = match std::env::current_exe() {
+                Ok(p) => p.to_string_lossy().into_owned(),
+                Err(e) => {
+                    let _ = RegCloseKey(hk);
+                    return Err(format!("current_exe failed: {}", e));
+                }
+            };
+            // "exe path" applet --bg: the process launched at login is the
+            // long-lived tray process itself (no detached-spawn parent).
+            let cmd = format!("\"{}\" applet --bg", exe);
+            let data: Vec<u8> = crate::to_widez(&cmd)
+                .iter()
+                .flat_map(|c| c.to_le_bytes())
+                .collect();
+            RegSetValueExW(hk, crate::pcw(&val), None, REG_SZ, Some(&data))
+        } else {
+            RegDeleteValueW(hk, crate::pcw(&val))
+        };
+        let _ = RegCloseKey(hk);
+        if result == ERROR_SUCCESS || (!on && result == ERROR_FILE_NOT_FOUND) {
+            Ok(())
+        } else {
+            Err(format!(
+                "registry update failed with error {}",
+                result.0
+            ))
+        }
+    }
 }
 
 fn new_nid(hwnd: HWND) -> NOTIFYICONDATAW {
@@ -290,6 +376,19 @@ unsafe fn show_menu(s: &mut TrayState, hwnd: HWND) {
         PCWSTR::from_raw(auto_label.as_ptr()),
     );
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+    let autostart_label = crate::to_widez("Start with Windows");
+    let autostart_flags = if autostart_enabled() {
+        MF_STRING | MF_CHECKED
+    } else {
+        MF_STRING
+    };
+    let _ = AppendMenuW(
+        menu,
+        autostart_flags,
+        ID_AUTOSTART,
+        PCWSTR::from_raw(autostart_label.as_ptr()),
+    );
+    let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
     let exit_w = crate::to_widez("Exit");
     let _ = AppendMenuW(menu, MF_STRING, ID_EXIT, PCWSTR::from_raw(exit_w.as_ptr()));
 
@@ -328,6 +427,17 @@ unsafe fn show_menu(s: &mut TrayState, hwnd: HWND) {
                 apply_target(s, spec, "auto resume");
                 apply_auto_hdr(s, active);
                 s.auto_sw.last_active = Some(active);
+            }
+        }
+        ID_AUTOSTART => {
+            let on = !autostart_enabled();
+            match autostart_set(on) {
+                Ok(_) => tray_log(if on {
+                    "autostart = true (HKCU Run)"
+                } else {
+                    "autostart = false (HKCU Run)"
+                }),
+                Err(e) => tray_log(&format!("autostart failed: {}", e)),
             }
         }
         ID_EXIT => {

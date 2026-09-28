@@ -50,6 +50,7 @@ game_mode_switcher applet
 | Right-click → mode entry | Switch to that mode, Auto is unchecked (manual) |
 | Right-click → Auto | Re-enable auto detection and sync immediately |
 | Right-click → Auto (again) | Turn Auto off entirely |
+| Right-click → Start with Windows | Toggle launch-at-login (HKCU Run key, no admin) |
 | Right-click → Exit | Quit the applet |
 
 The icon reads **HDR** (amber) or **SDR** (gray) and tracks the real
