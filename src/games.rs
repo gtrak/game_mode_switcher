@@ -76,8 +76,6 @@ fn parse_hdr_opt(v: &str) -> Option<bool> {
 }
 
 pub(crate) struct Config {
-    pub(crate) link: String,
-    pub(crate) bpp: u32,
     pub(crate) device: Option<String>,
     pub(crate) poll_secs: u64,
     pub(crate) grace_secs: u64,
@@ -98,8 +96,6 @@ pub(crate) struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            link: String::from("dp-uhbr13"),
-            bpp: 24,
             device: None,
             poll_secs: 2,
             grace_secs: 15,
@@ -125,11 +121,6 @@ impl Default for Config {
 pub(crate) const CONFIG_NAME: &str = "game_mode_switcher.ini";
 
 const CONFIG_TEMPLATE: &str = "# game_mode_switcher configuration (used by `watch` and the tray applet)
-# link bandwidth class for DSC verdicts:
-#   dp-hbr2 dp-hbr3 dp-uhbr10 dp-uhbr13 dp-uhbr20 hdmi20 hdmi21-frl3..frl6
-link = dp-uhbr13
-# bits per pixel for bandwidth math (24 = 8bpc RGB 4:4:4)
-bpp = 24
 # restrict to one output, e.g. DISPLAY1 (comment out = first output)
 # device = DISPLAY1
 # polling interval for game detection, seconds
@@ -217,8 +208,6 @@ pub(crate) fn load_or_create_config(path: &Path) -> Config {
         let k = k.trim().to_ascii_lowercase();
         let v = v.trim();
         match k.as_str() {
-            "link" => cfg.link = v.to_string(),
-            "bpp" => cfg.bpp = v.parse().unwrap_or(24),
             "device" => {
                 if !v.is_empty() {
                     cfg.device = Some(v.to_string())

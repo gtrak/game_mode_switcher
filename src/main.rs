@@ -14,8 +14,6 @@ use windows::Win32::Graphics::Gdi::{
     ENUM_DISPLAY_SETTINGS_MODE,
 };
 
-const BLANKING_FACTOR: f64 = 1.12;
-
 mod games;
 mod hdr;
 mod nvapi;
@@ -44,33 +42,6 @@ pub(crate) struct Output {
 pub(crate) fn wide_to_string(ws: &[u16]) -> String {
     let end = ws.iter().position(|&c| c == 0).unwrap_or(ws.len());
     String::from_utf16_lossy(&ws[..end])
-}
-
-fn mode_bitrate_gbps(m: Mode, bpp: u32) -> f64 {
-    (m.w as f64 * m.h as f64 * m.freq as f64 * bpp as f64) / 1e9
-}
-
-pub(crate) fn link_eff_gbps(link: &str) -> Option<f64> {
-    match link {
-        "dp-hbr2" => Some(17.28),
-        "dp-hbr3" => Some(25.92),
-        "dp-uhbr10" => Some(38.69),
-        "dp-uhbr13" => Some(51.84),
-        "dp-uhbr20" => Some(77.58),
-        "hdmi20" => Some(14.4),
-        "hdmi21-frl3" => Some(10.67),
-        "hdmi21-frl4" => Some(21.33),
-        "hdmi21-frl5" => Some(28.44),
-        "hdmi21-frl6" => Some(42.67),
-        _ => None,
-    }
-}
-
-fn needs_dsc(m: Mode, bpp: u32, link: &str) -> bool {
-    match link_eff_gbps(link) {
-        Some(eff) => mode_bitrate_gbps(m, bpp) * BLANKING_FACTOR > eff,
-        None => false,
-    }
 }
 
 pub(crate) fn pcw(v: &[u16]) -> PCWSTR {
@@ -194,12 +165,9 @@ pub(crate) fn apply_mode(dev: &[u16], m: Mode, persist: bool) -> Result<(), Stri
     }
 }
 
-fn parse_args() -> (String, Option<String>, String, u32, Option<u64>) {
+fn parse_args() -> (String, Option<String>) {
     let mut cmd = String::from("status");
     let mut device: Option<String> = None;
-    let mut link = String::from("dp-hbr3");
-    let mut bpp = 24u32;
-    let mut secs: Option<u64> = None;
     let args: Vec<String> = env::args().skip(1).collect();
     let mut it = args.iter();
     if let Some(first) = it.next() {
@@ -212,31 +180,11 @@ fn parse_args() -> (String, Option<String>, String, u32, Option<u64>) {
         }
     }
     while let Some(a) = it.next() {
-        match a.as_str() {
-            "--device" => device = it.next().cloned(),
-            "--link" => {
-                if let Some(v) = it.next() {
-                    link = v.clone();
-                }
-            }
-            "--bpp" => {
-                if let Some(v) = it.next() {
-                    bpp = v.parse().unwrap_or(24);
-                }
-            }
-            "--secs" => {
-                if let Some(v) = it.next() {
-                    secs = v.parse().ok();
-                }
-            }
-            _ => {}
+        if a.as_str() == "--device" {
+            device = it.next().cloned();
         }
     }
-    if link_eff_gbps(&link).is_none() {
-        eprintln!("unknown link type '{}', see --help", link);
-        exit(2);
-    }
-    (cmd, device, link, bpp, secs)
+    (cmd, device)
 }
 
 pub(crate) fn find_output<'a>(outs: &'a [Output], device: &Option<String>) -> &'a Output {
@@ -255,18 +203,9 @@ pub(crate) fn find_output<'a>(outs: &'a [Output], device: &Option<String>) -> &'
     outs.first().expect("no active display outputs found")
 }
 
-fn print_mode_line(m: Mode, bpp: u32, link: &str, current: &Option<Mode>) {
-    let dsc = if needs_dsc(m, bpp, link) { "DSC" } else { "raw" };
+fn print_mode_line(m: Mode, current: &Option<Mode>) {
     let cur = if Some(m) == *current { " [current]" } else { "" };
-    println!(
-        "    {}x{} @ {:>3} Hz   {:>2} Gbps  {}{}",
-        m.w,
-        m.h,
-        m.freq,
-        format!("{:.1}", mode_bitrate_gbps(m, bpp)),
-        dsc,
-        cur
-    );
+    println!("    {}x{} @ {:>3} Hz{}", m.w, m.h, m.freq, cur);
 }
 
 pub(crate) fn to_widez(s: &str) -> Vec<u16> {
@@ -392,22 +331,18 @@ fn cmd_watch(cfg: &Config, dry_run: bool) {
 
 fn print_usage() {
     println!(
-        "game_mode_switcher {} - programmatic DSC toggle via display mode switching
+        "game_mode_switcher {} - tray applet + CLI for display mode and HDR switching
 
-DSC (Display Stream Compression) is engaged by the GPU driver per-mode whenever
-the uncompressed pixel rate exceeds the link bandwidth. Switching to a mode
-that fits the link raw (uncompressed) forces a link retrain without DSC;
-switching back re-enables it. This tool automates that.
+Automatically switches your display between game mode (high refresh) and
+desktop mode (lower refresh) based on running games, with optional HDR
+control. The tray applet is the primary interface; the CLI is scriptable.
 
 USAGE:
   game_mode_switcher <command> [options]
 
 COMMANDS:
-  status            Show current mode + whether it likely requires DSC (default)
+  status            Show current display mode (default)
   list              Enumerate outputs and all supported modes
-  off               Switch to the highest-refresh mode that does NOT need DSC
-  on                Restore the highest-refresh mode (DSC resumes if needed)
-  test [--secs N]   Apply DSC-off mode for N seconds, then restore (default 10)
   watch [--dry-run] [--config FILE]
                     Auto-switch by game detection: while a game runs apply
                     game_mode (and game_hdr if set); grace_secs after the
@@ -428,19 +363,7 @@ COMMANDS:
                     dump15|set15 V SIZE|types
 
 OPTIONS:
-  --device NAME     Output to act on, e.g. DISPLAY1 (default: first output)
-  --link TYPE       Link bandwidth assumption:
-                      dp-hbr2 dp-hbr3 dp-uhbr10 dp-uhbr13 dp-uhbr20
-                      hdmi20 hdmi21-frl3 hdmi21-frl4 hdmi21-frl5 hdmi21-frl6
-                    (default: dp-hbr3; use dp-uhbr13 for RTX 40-series +
-                     DP 2.1 displays; `status` shows all link classes)
-  --bpp N           Bits per pixel for bandwidth math (default 24 = 8b/RGB444)
-  --secs N          Duration for `test` (default 10)
-
-NOTES:
-  `off`/`on` persist via the registry; `test` is temporary.
-  The DSC verdict is a bandwidth heuristic, not a driver query: Windows exposes
-  no public API to read the sink's DSC state.",
+  --device NAME     Output to act on, e.g. DISPLAY1 (default: first output)",
         env!("CARGO_PKG_VERSION")
     );
 }
@@ -739,7 +662,7 @@ fn main() {
         }
         return;
     }
-    let (cmd, device, link, bpp, secs) = parse_args();
+    let (cmd, _device) = parse_args();
     let outs = enumerate_outputs();
     if outs.is_empty() {
         eprintln!("no active display outputs found");
@@ -755,49 +678,12 @@ fn main() {
                     o.monitor
                 );
                 match o.current {
-                    Some(c) => {
-                        let need = mode_bitrate_gbps(c, bpp) * BLANKING_FACTOR;
-                        println!(
-                            "  current: {}x{} @ {} Hz  ({} bpp, incl. blanking: {:.1} Gbps)",
-                            c.w, c.h, c.freq, bpp, need
-                        );
-                        println!("  DSC verdict per possible link:");
-                        for l in [
-                            "dp-hbr2",
-                            "dp-hbr3",
-                            "dp-uhbr10",
-                            "dp-uhbr13",
-                            "dp-uhbr20",
-                            "hdmi20",
-                            "hdmi21-frl6",
-                        ] {
-                            let eff = link_eff_gbps(l).unwrap_or(0.0);
-                            let d = needs_dsc(c, bpp, l);
-                            println!(
-                                "    {:<12} {:>6.2} Gbps eff -> {}",
-                                l,
-                                eff,
-                                if d {
-                                    "needs DSC"
-                                } else {
-                                    "fits uncompressed"
-                                }
-                            );
-                        }
-                    }
+                    Some(c) => println!(
+                        "  current: {}x{} @ {} Hz",
+                        c.w, c.h, c.freq
+                    ),
                     None => println!("  current mode unavailable"),
                 }
-            }
-            let target = pick_dsc_free(&outs, &device, bpp, &link);
-            match target {
-                Some((o, m)) => println!(
-                    "  game_mode_switcher candidate: {} -> {}x{} @ {} Hz (raw link, no DSC)",
-                    wide_to_string(&o.device_name),
-                    m.w,
-                    m.h,
-                    m.freq
-                ),
-                None => println!("  no DSC-free mode available at current resolution"),
             }
         }
         "list" => {
@@ -809,89 +695,9 @@ fn main() {
                     o.monitor
                 );
                 for m in &o.modes {
-                    print_mode_line(*m, bpp, &link, &o.current);
+                    print_mode_line(*m, &o.current);
                 }
             }
-        }
-        "off" => {
-            let o = find_output(&outs, &device);
-            let cur = o.current.expect("no current mode");
-            match pick_dsc_free(std::slice::from_ref(o), &None, bpp, &link) {
-                Some((_, m)) => {
-                    if m.freq == cur.freq {
-                        println!(
-                            "current mode {}x{} @ {} Hz already fits the {} link raw; nothing to do",
-                            cur.w, cur.h, cur.freq, link
-                        );
-                        return;
-                    }
-                    apply_mode(&o.device_name, m, true)
-                        .unwrap_or_else(|e| exit_with(&e));
-                    println!(
-                        "DSC OFF: {}x{} @ {} Hz (was {}x{} @ {} Hz)",
-                        m.w, m.h, m.freq, cur.w, cur.h, cur.freq
-                    );
-                }
-                None => {
-                    eprintln!(
-                        "no mode at {}x{} fits {} raw; lower --bpp or pick another link",
-                        cur.w, cur.h, link
-                    );
-                    exit(1);
-                }
-            }
-        }
-        "on" => {
-            let o = find_output(&outs, &device);
-            let cur = o.current.expect("no current mode");
-            let best = o
-                .modes
-                .iter()
-                .filter(|m| m.w == cur.w && m.h == cur.h)
-                .max_by_key(|m| m.freq)
-                .copied();
-            match best {
-                Some(m) => {
-                    if m.freq == cur.freq {
-                        println!("already at max refresh {} Hz; nothing to do", m.freq);
-                        return;
-                    }
-                    apply_mode(&o.device_name, m, true).unwrap_or_else(|e| exit_with(&e));
-                    println!(
-                        "restored: {}x{} @ {} Hz{}",
-                        m.w,
-                        m.h,
-                        m.freq,
-                        if needs_dsc(m, bpp, &link) { " (DSC engaged)" } else { "" }
-                    );
-                }
-                None => {
-                    eprintln!("no modes at {}x{}", cur.w, cur.h);
-                    exit(1);
-                }
-            }
-        }
-        "test" => {
-            let secs = secs.unwrap_or(10);
-            let o = find_output(&outs, &device);
-            let cur = o.current.expect("no current mode");
-            let target = pick_dsc_free(std::slice::from_ref(o), &None, bpp, &link);
-            let m = match target {
-                Some((_, m)) => m,
-                None => {
-                    eprintln!("no DSC-free mode available at current resolution");
-                    exit(1);
-                }
-            };
-            if m.freq == cur.freq {
-                println!("current mode already DSC-free; nothing to test");
-                return;
-            }
-            apply_mode(&o.device_name, m, false).unwrap_or_else(|e| exit_with(&e));
-            println!("DSC OFF for {}s ({}x{} @ {} Hz)...", secs, m.w, m.h, m.freq);
-            thread::sleep(Duration::from_secs(secs));
-            apply_mode(&o.device_name, cur, false).unwrap_or_else(|e| exit_with(&e));
-            println!("restored {}x{} @ {} Hz", cur.w, cur.h, cur.freq);
         }
         other => {
             eprintln!("unknown command '{}'\n", other);
@@ -899,25 +705,4 @@ fn main() {
             exit(2);
         }
     }
-}
-
-fn exit_with(msg: &str) -> ! {
-    eprintln!("{}", msg);
-    exit(1);
-}
-
-fn pick_dsc_free<'a>(
-    outs: &'a [Output],
-    device: &Option<String>,
-    bpp: u32,
-    link: &str,
-) -> Option<(&'a Output, Mode)> {
-    let o = find_output(outs, device);
-    let cur = o.current?;
-    o.modes
-        .iter()
-        .filter(|m| m.w == cur.w && m.h == cur.h && m.freq <= cur.freq)
-        .filter(|m| !needs_dsc(**m, bpp, link))
-        .max_by_key(|m| m.freq)
-        .map(|m| (o, *m))
 }
