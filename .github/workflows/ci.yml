@@ -39,10 +39,8 @@ jobs:
             ~/.cargo/bin/cargo-xwin.exe
             target
             .xwin-cache
-          key: ci-xwin-${{ hashFiles('Cargo.lock') }}-v2
-          restore-keys: |
-            ci-xwin-${{ hashFiles('Cargo.lock') }}
-            ci-xwin-
+          key: xwin-${{ hashFiles('Cargo.lock') }}-v2
+          restore-keys: xwin-
 
       - name: Install cargo-xwin
         run: |
