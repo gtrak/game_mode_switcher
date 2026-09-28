@@ -26,13 +26,32 @@ pub(crate) struct Output {
     pub(crate) modes: Vec<Mode>,
 }
 
+fn new_devmode() -> DEVMODEW {
+    DEVMODEW {
+        dmSize: std::mem::size_of::<DEVMODEW>() as u16,
+        ..Default::default()
+    }
+}
+
+fn new_display_device() -> DISPLAY_DEVICEW {
+    DISPLAY_DEVICEW {
+        cb: std::mem::size_of::<DISPLAY_DEVICEW>() as u32,
+        ..Default::default()
+    }
+}
+
+fn mode_from_devmode(dm: &DEVMODEW) -> Mode {
+    Mode {
+        w: dm.dmPelsWidth,
+        h: dm.dmPelsHeight,
+        freq: dm.dmDisplayFrequency,
+    }
+}
+
 pub(crate) fn enumerate_outputs() -> Vec<Output> {
     let mut outs = Vec::new();
     for idx in 0..64u32 {
-        let mut dd = DISPLAY_DEVICEW {
-            cb: std::mem::size_of::<DISPLAY_DEVICEW>() as u32,
-            ..Default::default()
-        };
+        let mut dd = new_display_device();
         unsafe {
             if !EnumDisplayDevicesW(PCWSTR::null(), idx, &mut dd, 0).as_bool() {
                 break;
@@ -41,10 +60,7 @@ pub(crate) fn enumerate_outputs() -> Vec<Output> {
         if (dd.StateFlags & DISPLAY_DEVICE_ATTACHED_TO_DESKTOP) == DISPLAY_DEVICE_ATTACHED_TO_DESKTOP
             && (dd.StateFlags & DISPLAY_DEVICE_ACTIVE) == DISPLAY_DEVICE_ACTIVE
         {
-            let mut mon = DISPLAY_DEVICEW {
-                cb: std::mem::size_of::<DISPLAY_DEVICEW>() as u32,
-                ..Default::default()
-            };
+            let mut mon = new_display_device();
             let monitor = unsafe {
                 if EnumDisplayDevicesW(pcw(&dd.DeviceName), 0, &mut mon, 0).as_bool() {
                     wide_to_string(&mon.DeviceString)
@@ -54,10 +70,7 @@ pub(crate) fn enumerate_outputs() -> Vec<Output> {
             };
             let mut current = None;
             {
-                let mut dm = DEVMODEW {
-                    dmSize: std::mem::size_of::<DEVMODEW>() as u16,
-                    ..Default::default()
-                };
+                let mut dm = new_devmode();
                 unsafe {
                     if EnumDisplaySettingsExW(
                         pcw(&dd.DeviceName),
@@ -67,21 +80,14 @@ pub(crate) fn enumerate_outputs() -> Vec<Output> {
                     )
                     .as_bool()
                     {
-                        current = Some(Mode {
-                            w: dm.dmPelsWidth,
-                            h: dm.dmPelsHeight,
-                            freq: dm.dmDisplayFrequency,
-                        });
+                        current = Some(mode_from_devmode(&dm));
                     }
                 }
             }
             let mut modes = Vec::new();
             let mut i = 0u32;
             loop {
-                let mut dm = DEVMODEW {
-                    dmSize: std::mem::size_of::<DEVMODEW>() as u16,
-                    ..Default::default()
-                };
+                let mut dm = new_devmode();
                 unsafe {
                     if !EnumDisplaySettingsExW(
                         pcw(&dd.DeviceName),
@@ -95,11 +101,7 @@ pub(crate) fn enumerate_outputs() -> Vec<Output> {
                     }
                 }
                 if dm.dmDisplayFrequency >= 24 {
-                    let m = Mode {
-                        w: dm.dmPelsWidth,
-                        h: dm.dmPelsHeight,
-                        freq: dm.dmDisplayFrequency,
-                    };
+                    let m = mode_from_devmode(&dm);
                     if !modes.contains(&m) {
                         modes.push(m);
                     }
@@ -123,10 +125,7 @@ pub(crate) fn enumerate_outputs() -> Vec<Output> {
 }
 
 pub(crate) fn apply_mode(dev: &[u16], m: Mode, persist: bool) -> Result<(), String> {
-    let mut dm = DEVMODEW {
-        dmSize: std::mem::size_of::<DEVMODEW>() as u16,
-        ..Default::default()
-    };
+    let mut dm = new_devmode();
     dm.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY;
     dm.dmPelsWidth = m.w;
     dm.dmPelsHeight = m.h;
@@ -189,6 +188,15 @@ pub(crate) fn pick_mode<'a>(
     best_le
         .or(best_gt)
         .map(|m| (o, m))
+}
+
+pub(crate) fn print_output_header(o: &Output) {
+    println!(
+        "{}  [{} / {}]",
+        wide_to_string(&o.device_name),
+        o.adapter,
+        o.monitor
+    );
 }
 
 pub(crate) fn print_mode_line(m: Mode, current: &Option<Mode>) {

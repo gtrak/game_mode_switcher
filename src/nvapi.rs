@@ -1,4 +1,5 @@
 use windows::core::{PCSTR, PCWSTR};
+use windows::Win32::Foundation::HMODULE;
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 
 const ID_INITIALIZE: u32 = 0x0150_e828;
@@ -13,7 +14,7 @@ const HDR_MODE_UHDA: u32 = 2;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
-pub(crate) struct MasteringData {
+struct MasteringData {
     pub v: [u16; 12],
 }
 
@@ -79,11 +80,28 @@ struct NvapiCtx {
     hdr_caps: HdrCapabilitiesFn,
 }
 
+static LIB: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
+fn nvapi_lib() -> Result<HMODULE, String> {
+    match LIB.get() {
+        Some(v) => Ok(HMODULE(*v as *mut core::ffi::c_void)),
+        None => {
+            let name_w: Vec<u16> = "nvapi64.dll\0".encode_utf16().collect();
+            match unsafe { LoadLibraryW(PCWSTR::from_raw(name_w.as_ptr())) } {
+                Ok(l) => {
+                    let v = l.0 as usize;
+                    LIB.get_or_init(|| v);
+                    Ok(l)
+                }
+                Err(e) => Err(format!("nvapi64.dll not loadable: {}", e)),
+            }
+        }
+    }
+}
+
 fn nvapi_ctx(display_name: &str) -> Result<NvapiCtx, String> {
     unsafe {
-        let name_w: Vec<u16> = "nvapi64.dll\0".encode_utf16().collect();
-        let lib = LoadLibraryW(PCWSTR::from_raw(name_w.as_ptr()))
-            .map_err(|e| format!("nvapi64.dll not loadable: {}", e))?;
+        let lib = nvapi_lib()?;
         let sym = b"nvapi_QueryInterface\0";
         let qif_addr = GetProcAddress(lib, PCSTR::from_raw(sym.as_ptr()));
         let Some(qif_addr) = qif_addr else {

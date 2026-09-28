@@ -6,6 +6,16 @@ pub(crate) fn wide_to_string(ws: &[u16]) -> String {
     String::from_utf16_lossy(&ws[..end])
 }
 
+pub(crate) fn wide_cstr(p: *const u16) -> String {
+    unsafe {
+        let mut l = 0usize;
+        while *p.add(l) != 0 {
+            l += 1;
+        }
+        String::from_utf16_lossy(std::slice::from_raw_parts(p, l))
+    }
+}
+
 pub(crate) fn pcw(v: &[u16]) -> PCWSTR {
     PCWSTR::from_raw(v.as_ptr())
 }

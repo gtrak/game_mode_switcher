@@ -148,13 +148,17 @@ fn hdr_hz_text(s: &TrayState) -> String {
     )
 }
 
-fn update_icon(s: &mut TrayState) {
-    let mut nid = NOTIFYICONDATAW {
+fn new_nid(hwnd: HWND) -> NOTIFYICONDATAW {
+    NOTIFYICONDATAW {
         cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: hwnd,
+        uID: TRAY_ID,
         ..Default::default()
-    };
-    nid.hWnd = s.hwnd;
-    nid.uID = TRAY_ID;
+    }
+}
+
+fn update_icon(s: &mut TrayState) {
+    let mut nid = new_nid(s.hwnd);
     nid.uFlags = NIF_ICON | NIF_TIP;
     nid.hIcon = if s.hdr_on { s.icon_hdr } else { s.icon_sdr };
     let tip = hdr_hz_text(s);
@@ -293,7 +297,7 @@ unsafe fn show_menu(s: &mut TrayState, hwnd: HWND) {
     let mut pt = POINT::default();
     let _ = GetCursorPos(&mut pt);
     let flags = (TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_RETURNCMD).0;
-    let id = TrackPopupMenuEx(menu, flags, pt.x, pt.y, hwnd, None).0 as u32 as usize;
+    let id = TrackPopupMenuEx(menu, flags, pt.x, pt.y, hwnd, None).0 as usize;
     let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
     let _ = DestroyMenu(menu);
     if id >= ID_MANUAL0 && id < ID_MANUAL0 + s.cfg.modes.len() {
@@ -359,12 +363,7 @@ unsafe extern "system" fn wndproc(
             LRESULT(0)
         }
         WM_DESTROY => {
-            let nid = NOTIFYICONDATAW {
-                cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
-                hWnd: hwnd,
-                uID: TRAY_ID,
-                ..Default::default()
-            };
+            let nid = new_nid(hwnd);
             let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
             PostQuitMessage(0);
             LRESULT(0)
@@ -431,12 +430,7 @@ pub fn run(cfg: crate::Config) {
         });
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, (&mut *state) as *mut TrayState as isize);
 
-        let mut nid = NOTIFYICONDATAW {
-            cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
-            ..Default::default()
-        };
-        nid.hWnd = hwnd;
-        nid.uID = TRAY_ID;
+        let mut nid = new_nid(hwnd);
         nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         nid.uCallbackMessage = CB_MSG;
         nid.hIcon = if hdr0 { icon_hdr } else { icon_sdr };

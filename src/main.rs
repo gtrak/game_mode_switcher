@@ -15,7 +15,9 @@ mod nvapi;
 mod tray;
 mod util;
 
-pub(crate) use display::{apply_mode, enumerate_outputs, find_output, pick_mode, print_mode_line};
+pub(crate) use display::{
+    apply_mode, enumerate_outputs, find_output, pick_mode, print_mode_line, print_output_header,
+};
 pub(crate) use util::{pcw, to_widez, unix_ts, wide_to_string};
 
 pub(crate) use config::{
@@ -173,12 +175,7 @@ fn cmd_status() {
         exit(1);
     }
     for o in &outs {
-        println!(
-            "{}  [{} / {}]",
-            wide_to_string(&o.device_name),
-            o.adapter,
-            o.monitor
-        );
+        print_output_header(o);
         match o.current {
             Some(c) => println!(
                 "  current: {}x{} @ {} Hz",
@@ -196,12 +193,7 @@ fn cmd_list() {
         exit(1);
     }
     for o in &outs {
-        println!(
-            "{}  [{} / {}]",
-            wide_to_string(&o.device_name),
-            o.adapter,
-            o.monitor
-        );
+        print_output_header(o);
         for m in &o.modes {
             print_mode_line(*m, &o.current);
         }
@@ -385,8 +377,8 @@ COMMANDS:
   applet            Launch the system tray applet (detached; left-click
                     toggles HDR, right-click menu: modes / Auto / Exit;
                     same game_mode_switcher.ini)
-   hdr [status|on|off|toggle]
-                     Show or set Windows HDR on the primary display.
+  hdr [status|on|off|toggle]
+                    Show or set Windows HDR on the primary display.
 
 OPTIONS:
   --config FILE   Config file for watch/config (default: game_mode_switcher.ini next to the exe)

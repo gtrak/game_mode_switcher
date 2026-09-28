@@ -86,14 +86,18 @@ pub(crate) fn hdr_set(on: bool) -> Result<(), String> {
     set_type15(value, 24)
 }
 
-fn wait_type15_state(state: u32, tries: u32, delay_ms: u64) -> bool {
+fn wait_for(tries: u32, delay_ms: u64, mut probe: impl FnMut() -> bool) -> bool {
     for _ in 0..tries {
         std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-        if type15_state() == Ok(state) {
+        if probe() {
             return true;
         }
     }
     false
+}
+
+fn wait_type15_state(state: u32, tries: u32, delay_ms: u64) -> bool {
+    wait_for(tries, delay_ms, || type15_state() == Ok(state))
 }
 
 pub(crate) enum HdrMethod {
@@ -116,13 +120,10 @@ pub(crate) fn hdr_set_verified(on: bool) -> Result<HdrMethod, String> {
     }
     if crate::nvapi::nvapi_hdr_set(crate::PRIMARY_DISPLAY, on).is_ok() {
         let want = if on { 2u32 } else { 0u32 };
-        for _ in 0..10 {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-            if crate::nvapi::nvapi_hdr_mode(crate::PRIMARY_DISPLAY) == Ok(want)
-                && type15_state() == Ok(want_state)
-            {
-                return Ok(HdrMethod::Nvapi);
-            }
+        if wait_for(10, 100, || crate::nvapi::nvapi_hdr_mode(crate::PRIMARY_DISPLAY) == Ok(want)
+            && type15_state() == Ok(want_state)
+        ) {
+            return Ok(HdrMethod::Nvapi);
         }
     }
     Err(format!(
@@ -132,13 +133,11 @@ pub(crate) fn hdr_set_verified(on: bool) -> Result<HdrMethod, String> {
 }
 
 fn wait_legacy(on: bool, tries: u32, delay_ms: u64) -> bool {
-    for _ in 0..tries {
-        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-        if hdr_state().ok().flatten().map(|i| i.enabled) == Some(on) {
-            return true;
-        }
-    }
-    false
+    wait_for(
+        tries,
+        delay_ms,
+        || hdr_state().ok().flatten().map(|i| i.enabled) == Some(on),
+    )
 }
 
 fn legacy_set(on: bool) -> Result<(), String> {

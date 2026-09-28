@@ -28,14 +28,9 @@ pub(crate) fn running_processes() -> Vec<ProcessInfo> {
             };
             if Process32FirstW(snap, &mut pe).is_ok() {
                 loop {
-                    let end = pe
-                        .szExeFile
-                        .iter()
-                        .position(|&c| c == 0)
-                        .unwrap_or(pe.szExeFile.len());
                     out.push(ProcessInfo {
                         pid: pe.th32ProcessID,
-                        name: String::from_utf16_lossy(&pe.szExeFile[..end]),
+                        name: crate::wide_to_string(&pe.szExeFile),
                     });
                     if Process32NextW(snap, &mut pe).is_err() {
                         break;
@@ -48,28 +43,36 @@ pub(crate) fn running_processes() -> Vec<ProcessInfo> {
     out
 }
 
+struct PdhQuery(windows::Win32::System::Performance::PDH_HQUERY);
+
+impl Drop for PdhQuery {
+    fn drop(&mut self) {
+        unsafe {
+            windows::Win32::System::Performance::PdhCloseQuery(self.0);
+        }
+    }
+}
+
 pub(crate) fn gpu_loads() -> Result<Vec<(u32, f64)>, String> {
     use windows::Win32::System::Performance::{
-        PdhAddCounterW, PdhCloseQuery, PdhCollectQueryData, PdhGetFormattedCounterArrayW,
-        PdhOpenQueryW, PDH_FMT_COUNTERVALUE_ITEM_W, PDH_FMT_DOUBLE, PDH_HCOUNTER, PDH_HQUERY,
-        PDH_MORE_DATA,
+        PdhAddCounterW, PdhCollectQueryData, PdhGetFormattedCounterArrayW, PdhOpenQueryW,
+        PDH_FMT_COUNTERVALUE_ITEM_W, PDH_FMT_DOUBLE, PDH_HCOUNTER, PDH_HQUERY, PDH_MORE_DATA,
     };
     unsafe {
-        let mut query = PDH_HQUERY::default();
-        if PdhOpenQueryW(PCWSTR::null(), 0, &mut query) != 0 {
+        let mut q = PDH_HQUERY::default();
+        if PdhOpenQueryW(PCWSTR::null(), 0, &mut q) != 0 {
             return Err(String::from("PdhOpenQueryW failed"));
         }
+        let query = PdhQuery(q);
         let mut counter = PDH_HCOUNTER::default();
         let path_w = to_widez("\\GPU Engine(*)\\Utilization Percentage");
-        if PdhAddCounterW(query, pcw(&path_w), 0, &mut counter) != 0 {
-            PdhCloseQuery(query);
+        if PdhAddCounterW(query.0, pcw(&path_w), 0, &mut counter) != 0 {
             return Err(String::from("PdhAddCounterW failed"));
         }
-        let c1 = PdhCollectQueryData(query);
+        let c1 = PdhCollectQueryData(query.0);
         std::thread::sleep(Duration::from_millis(400));
-        let c2 = PdhCollectQueryData(query);
+        let c2 = PdhCollectQueryData(query.0);
         if c1 != 0 || c2 != 0 {
-            PdhCloseQuery(query);
             return Err(String::from("PdhCollectQueryData failed"));
         }
         let mut size = 0u32;
@@ -77,7 +80,6 @@ pub(crate) fn gpu_loads() -> Result<Vec<(u32, f64)>, String> {
         if PdhGetFormattedCounterArrayW(counter, PDH_FMT_DOUBLE, &mut size, &mut count, None)
             != PDH_MORE_DATA
         {
-            PdhCloseQuery(query);
             return Err(String::from("PdhGetFormattedCounterArrayW(size) failed"));
         }
         let mut buf = vec![0u8; size as usize];
@@ -89,20 +91,14 @@ pub(crate) fn gpu_loads() -> Result<Vec<(u32, f64)>, String> {
             Some(buf.as_mut_ptr() as *mut PDH_FMT_COUNTERVALUE_ITEM_W),
         );
         if r != 0 {
-            PdhCloseQuery(query);
             return Err(format!("PdhGetFormattedCounterArrayW failed ({})", r));
         }
-        PdhCloseQuery(query);
         let items =
             std::slice::from_raw_parts(buf.as_ptr() as *const PDH_FMT_COUNTERVALUE_ITEM_W, count as usize);
         let mut per_pid: Vec<(u32, f64)> = Vec::new();
         for item in items {
             let p = item.szName.0 as *const u16;
-            let mut l = 0usize;
-            while *p.add(l) != 0 {
-                l += 1;
-            }
-            let name = String::from_utf16_lossy(std::slice::from_raw_parts(p, l));
+            let name = crate::util::wide_cstr(p);
             let lower = name.to_ascii_lowercase();
             if !lower.contains("engtype_3d") {
                 continue;
@@ -131,15 +127,10 @@ pub(crate) fn gpu_loads() -> Result<Vec<(u32, f64)>, String> {
 const KGL_PATH: &str = r"System\GameConfigStore\Children";
 const KGL_TTL: Duration = Duration::from_secs(300);
 
-type KglCache = std::sync::Mutex<Option<(Instant, Vec<String>)>>;
-
-fn kgl_cache() -> &'static KglCache {
-    static CACHE: std::sync::OnceLock<KglCache> = std::sync::OnceLock::new();
-    CACHE.get_or_init(|| std::sync::Mutex::new(None))
-}
+static KGL_CACHE: std::sync::Mutex<Option<(Instant, Vec<String>)>> = std::sync::Mutex::new(None);
 
 pub(crate) fn known_game_exes() -> Vec<String> {
-    if let Ok(guard) = kgl_cache().lock() {
+    if let Ok(guard) = KGL_CACHE.lock() {
         if let Some((t, list)) = guard.as_ref() {
             if t.elapsed() < KGL_TTL {
                 return list.clone();
@@ -158,7 +149,7 @@ pub(crate) fn known_game_exes() -> Vec<String> {
         if RegOpenKeyExW(HKEY_CURRENT_USER, pcw(&sub), Some(0), KEY_READ, &mut hk)
             != ERROR_SUCCESS
         {
-            let _ = kgl_cache().lock().map(|mut c| *c = None);
+            let _ = KGL_CACHE.lock().map(|mut c| *c = None);
             return list;
         }
         let mut idx = 0u32;
@@ -224,7 +215,7 @@ pub(crate) fn known_game_exes() -> Vec<String> {
         }
         let _ = RegCloseKey(hk);
     }
-    let _ = kgl_cache().lock().map(|mut c| {
+    let _ = KGL_CACHE.lock().map(|mut c| {
         *c = Some((Instant::now(), list.clone()));
     });
     list
@@ -267,7 +258,6 @@ pub(crate) fn detect_fullscreen_game() -> bool {
             && (r.bottom - m.bottom).abs() <= TOL
     }
 }
-
 
 pub(crate) struct DetectSignals {
     pub(crate) named: bool,
