@@ -203,3 +203,117 @@ pub(crate) fn print_mode_line(m: Mode, current: &Option<Mode>) {
     let cur = if Some(m) == *current { " [current]" } else { "" };
     println!("    {}x{} @ {:>3} Hz{}", m.w, m.h, m.freq, cur);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mode(w: u32, h: u32, freq: u32) -> Mode {
+        Mode { w, h, freq }
+    }
+
+    fn output(current: Option<Mode>, modes: &[Mode]) -> Output {
+        Output {
+            device_name: crate::util::to_widez("\\\\.\\DISPLAY1"),
+            adapter: "test adapter".to_string(),
+            monitor: "test monitor".to_string(),
+            current,
+            modes: modes.to_vec(),
+        }
+    }
+
+    // `device` is `&None`, so `find_output` returns the first (only) output.
+    fn pick(o: &Output, spec: &ModeSpec) -> Option<Mode> {
+        pick_mode(std::slice::from_ref(o), &None, spec).map(|(_, m)| m)
+    }
+
+    fn assert_mode_eq(got: Option<Mode>, want: Option<(u32, u32, u32)>) {
+        match (got, want) {
+            (Some(g), Some(w)) => {
+                assert_eq!(g.w, w.0, "w");
+                assert_eq!(g.h, w.1, "h");
+                assert_eq!(g.freq, w.2, "freq");
+            }
+            (None, None) => {}
+            (Some(g), None) => panic!("expected None, got {}x{} @ {} Hz", g.w, g.h, g.freq),
+            (None, Some(w)) => panic!("expected {}x{} @ {} Hz, got None", w.0, w.1, w.2),
+        }
+    }
+
+    #[test]
+    fn pick_mode_exact_hit() {
+        let o = output(
+            Some(mode(1920, 1080, 60)),
+            &[mode(1920, 1080, 60), mode(1920, 1080, 144), mode(1920, 1080, 240)],
+        );
+        assert_mode_eq(
+            pick(&o, &ModeSpec { w: 0, h: 0, hz: 240 }),
+            Some((1920, 1080, 240)),
+        );
+    }
+
+    #[test]
+    fn pick_mode_prefers_closest_lower() {
+        let o = output(
+            Some(mode(1920, 1080, 60)),
+            &[mode(1920, 1080, 144), mode(1920, 1080, 240)],
+        );
+        assert_mode_eq(
+            pick(&o, &ModeSpec { w: 0, h: 0, hz: 200 }),
+            Some((1920, 1080, 144)),
+        );
+    }
+
+    #[test]
+    fn pick_mode_falls_back_to_higher() {
+        let o = output(Some(mode(1920, 1080, 60)), &[mode(1920, 1080, 240)]);
+        assert_mode_eq(
+            pick(&o, &ModeSpec { w: 0, h: 0, hz: 200 }),
+            Some((1920, 1080, 240)),
+        );
+    }
+
+    #[test]
+    fn pick_mode_spec_resolution_overrides_current() {
+        let o = output(
+            Some(mode(1920, 1080, 60)),
+            &[mode(1920, 1080, 144), mode(3840, 2160, 60)],
+        );
+        // hz = 0 keeps the current refresh, but the resolution comes from the spec
+        assert_mode_eq(
+            pick(&o, &ModeSpec { w: 3840, h: 2160, hz: 0 }),
+            Some((3840, 2160, 60)),
+        );
+    }
+
+    #[test]
+    fn pick_mode_zero_hz_uses_current_freq_as_target() {
+        let o = output(
+            Some(mode(1920, 1080, 60)),
+            &[mode(1920, 1080, 48), mode(1920, 1080, 144)],
+        );
+        // target = current 60 Hz, so the closest lower 48 Hz wins over 144 Hz
+        assert_mode_eq(
+            pick(&o, &ModeSpec { w: 0, h: 0, hz: 0 }),
+            Some((1920, 1080, 48)),
+        );
+    }
+
+    #[test]
+    fn pick_mode_no_mode_at_resolution_is_none() {
+        let o = output(Some(mode(1920, 1080, 60)), &[mode(3840, 2160, 60)]);
+        assert_mode_eq(pick(&o, &ModeSpec { w: 1280, h: 720, hz: 0 }), None);
+    }
+
+    #[test]
+    fn pick_mode_target_equal_to_existing_freq() {
+        let o = output(
+            Some(mode(1920, 1080, 60)),
+            &[mode(1920, 1080, 144), mode(1920, 1080, 60)],
+        );
+        assert_mode_eq(
+            pick(&o, &ModeSpec { w: 0, h: 0, hz: 60 }),
+            Some((1920, 1080, 60)),
+        );
+    }
+}

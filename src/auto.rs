@@ -42,3 +42,78 @@ impl AutoSwitcher {
         Some((spec, is_active, state_changed, reason))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn same_spec(a: ModeSpec, b: ModeSpec) -> bool {
+        a.w == b.w && a.h == b.h && a.hz == b.hz
+    }
+
+    #[test]
+    fn new_starts_with_no_state() {
+        let s = AutoSwitcher::new();
+        assert!(s.last_seen.is_none());
+        assert!(s.last_active.is_none());
+    }
+
+    #[test]
+    fn active_step_returns_game_spec_and_change() {
+        let cfg = crate::Config::default();
+        let mut s = AutoSwitcher::new();
+        let Some((sp, is_active, changed, reason)) = s.step(&cfg, true) else {
+            panic!("expected Some for active=true");
+        };
+        assert!(same_spec(sp, cfg.auto_game));
+        assert!(is_active);
+        assert!(changed);
+        assert_eq!(reason, "game running");
+        assert!(s.last_seen.is_some());
+    }
+
+    #[test]
+    fn inactive_within_grace_returns_none() {
+        let cfg = crate::Config::default();
+        let mut s = AutoSwitcher::new();
+        s.step(&cfg, true);
+        s.last_active = Some(true); // caller records the transition
+        assert!(s.step(&cfg, false).is_none());
+    }
+
+    #[test]
+    fn inactive_after_grace_returns_idle() {
+        let cfg = crate::Config::default();
+        let mut s = AutoSwitcher::new();
+        s.step(&cfg, true);
+        s.last_active = Some(true);
+        s.last_seen = Some(Instant::now() - Duration::from_secs(cfg.grace_secs + 1));
+        let Some((sp, is_active, changed, reason)) = s.step(&cfg, false) else {
+            panic!("expected Some after grace expiry");
+        };
+        assert!(same_spec(sp, cfg.auto_idle));
+        assert!(!is_active);
+        assert!(changed);
+        assert_eq!(reason, "idle");
+        assert!(s.last_seen.is_none());
+    }
+
+    #[test]
+    fn active_again_after_idle_reports_new_change() {
+        let cfg = crate::Config::default();
+        let mut s = AutoSwitcher::new();
+        s.step(&cfg, true);
+        s.last_active = Some(true);
+        s.last_seen = Some(Instant::now() - Duration::from_secs(cfg.grace_secs + 1));
+        assert!(s.step(&cfg, false).is_some());
+        s.last_active = Some(false); // caller records the idle transition
+        let Some((sp, is_active, changed, reason)) = s.step(&cfg, true) else {
+            panic!("expected Some for active=true");
+        };
+        assert!(same_spec(sp, cfg.auto_game));
+        assert!(is_active);
+        assert!(changed);
+        assert_eq!(reason, "game running");
+    }
+}

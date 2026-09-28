@@ -249,3 +249,212 @@ pub(crate) fn load_or_create_config(path: &Path) -> Config {
     }
     cfg
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mk_spec(w: u32, h: u32, hz: u32) -> ModeSpec {
+        ModeSpec { w, h, hz }
+    }
+
+    fn assert_spec_eq(got: Option<ModeSpec>, w: u32, h: u32, hz: u32) {
+        match got {
+            Some(s) => {
+                assert_eq!(s.w, w, "w");
+                assert_eq!(s.h, h, "h");
+                assert_eq!(s.hz, hz, "hz");
+            }
+            None => panic!("expected ModeSpec {}x{} @ {} Hz, got None", w, h, hz),
+        }
+    }
+
+    fn assert_spec_same(g: &ModeSpec, e: &ModeSpec) {
+        assert_eq!(g.w, e.w, "w");
+        assert_eq!(g.h, e.h, "h");
+        assert_eq!(g.hz, e.hz, "hz");
+    }
+
+    #[test]
+    fn parse_mode_spec_basic() {
+        assert_spec_eq(parse_mode_spec("240"), 0, 0, 240);
+        assert_spec_eq(parse_mode_spec("3840x2160@240"), 3840, 2160, 240);
+        assert_spec_eq(parse_mode_spec("3840x2160"), 3840, 2160, 0);
+    }
+
+    #[test]
+    fn parse_mode_spec_trims_and_accepts_uppercase_x() {
+        assert_spec_eq(parse_mode_spec("  240  "), 0, 0, 240);
+        assert_spec_eq(parse_mode_spec("3840X2160@240 "), 3840, 2160, 240);
+    }
+
+    #[test]
+    fn parse_mode_spec_rejects_garbage() {
+        for bad in ["", "   ", "abc", "3840x", "x2160"] {
+            assert!(parse_mode_spec(bad).is_none(), "expected None for {bad:?}");
+        }
+    }
+
+    #[test]
+    fn parse_mode_spec_bad_hz_after_at_keeps_zero_hz() {
+        // A dangling '@' or an unparseable hz after '@' falls back to hz = 0
+        // (keep current refresh) when a resolution is present.
+        assert_spec_eq(parse_mode_spec("3840x2160@"), 3840, 2160, 0);
+        assert_spec_eq(parse_mode_spec("3840x2160@abc"), 3840, 2160, 0);
+    }
+
+    #[test]
+    fn parse_mode_spec_zero_hz_is_valid_sentinel() {
+        assert_spec_eq(parse_mode_spec("0"), 0, 0, 0);
+    }
+
+    #[test]
+    fn mode_spec_label_all_branches() {
+        assert_eq!(mode_spec_label(&mk_spec(0, 0, 240)), "240 Hz");
+        assert_eq!(mode_spec_label(&mk_spec(3840, 2160, 0)), "3840x2160");
+        assert_eq!(
+            mode_spec_label(&mk_spec(3840, 2160, 240)),
+            "3840x2160 @ 240 Hz"
+        );
+    }
+
+    #[test]
+    fn parse_mode_specs_drops_empty_and_bad_entries() {
+        assert!(parse_mode_specs("").is_empty());
+        let v = parse_mode_specs("240,, 120 ,");
+        assert_eq!(v.len(), 2);
+        assert_spec_eq(Some(v[0]), 0, 0, 240);
+        assert_spec_eq(Some(v[1]), 0, 0, 120);
+        let v = parse_mode_specs("240, junk ,3840x2160@60");
+        assert_eq!(v.len(), 2);
+        assert_spec_eq(Some(v[0]), 0, 0, 240);
+        assert_spec_eq(Some(v[1]), 3840, 2160, 60);
+    }
+
+    #[test]
+    fn parse_hdr_opt_all_values() {
+        for t in ["on", "true", "1", "yes", "ON", "True", "YeS"] {
+            assert_eq!(parse_hdr_opt(t), Some(true), "expected true for {t:?}");
+        }
+        for f in ["off", "false", "0", "no", "OFF", "No", "FALSE"] {
+            assert_eq!(parse_hdr_opt(f), Some(false), "expected false for {f:?}");
+        }
+        assert_eq!(parse_hdr_opt(""), None);
+        assert_eq!(parse_hdr_opt("maybe"), None);
+    }
+
+    #[test]
+    fn split_csv_trims_and_drops_empty() {
+        assert!(split_csv("").is_empty());
+        assert_eq!(split_csv("a, b ,c"), vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn spec_for_and_hdr_for_select_by_active() {
+        let c = Config {
+            auto_game_hdr: Some(true),
+            auto_idle_hdr: Some(false),
+            ..Default::default()
+        };
+        assert_spec_same(&c.spec_for(true), &c.auto_game);
+        assert_spec_same(&c.spec_for(false), &c.auto_idle);
+        assert!(c.spec_for(true).hz != c.spec_for(false).hz);
+        assert_eq!(c.hdr_for(true), Some(true));
+        assert_eq!(c.hdr_for(false), Some(false));
+    }
+
+    fn tmp_path(name: &str) -> PathBuf {
+        env::temp_dir().join(format!("gms_test_{name}.ini"))
+    }
+
+    #[test]
+    fn load_template_round_trips_to_default() {
+        let path = tmp_path("template");
+        fs::write(&path, CONFIG_TEMPLATE).unwrap();
+        let cfg = load_or_create_config(&path);
+        let d = Config::default();
+        assert_eq!(cfg.device, d.device);
+        assert_eq!(cfg.poll_secs, d.poll_secs);
+        assert_eq!(cfg.grace_secs, d.grace_secs);
+        assert_eq!(cfg.modes.len(), d.modes.len());
+        for (g, e) in cfg.modes.iter().zip(&d.modes) {
+            assert_spec_same(g, e);
+        }
+        assert_spec_same(&cfg.auto_game, &d.auto_game);
+        assert_spec_same(&cfg.auto_idle, &d.auto_idle);
+        assert_eq!(cfg.auto_game_hdr, d.auto_game_hdr);
+        assert_eq!(cfg.auto_idle_hdr, d.auto_idle_hdr);
+        assert_eq!(cfg.auto_enabled_on_start, d.auto_enabled_on_start);
+        assert_eq!(cfg.fullscreen_detect, d.fullscreen_detect);
+        assert_eq!(cfg.gpu_load_detect, d.gpu_load_detect);
+        assert_eq!(cfg.gpu_threshold, d.gpu_threshold);
+        assert_eq!(cfg.games, d.games);
+        assert_eq!(cfg.games_ignore, d.games_ignore);
+        assert_eq!(cfg.kgl_min_gpu, d.kgl_min_gpu);
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_malformed_values_fall_back_to_defaults() {
+        let path = tmp_path("malformed");
+        fs::write(
+            &path,
+            "fullscreen_detect = banana\ngpu_load_detect = banana\npoll_secs = x\ngrace_secs = nope\ngpu_threshold = zz\nkgl_min_gpu = 12x\n",
+        )
+        .unwrap();
+        let cfg = load_or_create_config(&path);
+        let d = Config::default();
+        assert!(!cfg.fullscreen_detect);
+        assert!(!cfg.gpu_load_detect);
+        assert_eq!(cfg.poll_secs, d.poll_secs);
+        assert_eq!(cfg.grace_secs, d.grace_secs);
+        assert_eq!(cfg.gpu_threshold, d.gpu_threshold);
+        assert_eq!(cfg.kgl_min_gpu, d.kgl_min_gpu);
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_valid_overrides_are_honored() {
+        let path = tmp_path("overrides");
+        fs::write(
+            &path,
+            "poll_secs = 99\nmodes = 240, 3840x2160@120\ngame_hdr = on\nidle_hdr = off\n",
+        )
+        .unwrap();
+        let cfg = load_or_create_config(&path);
+        assert_eq!(cfg.poll_secs, 99);
+        assert_eq!(cfg.modes.len(), 2);
+        assert_spec_same(&cfg.modes[0], &mk_spec(0, 0, 240));
+        assert_spec_same(&cfg.modes[1], &mk_spec(3840, 2160, 120));
+        assert_eq!(cfg.auto_game_hdr, Some(true));
+        assert_eq!(cfg.auto_idle_hdr, Some(false));
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_unknown_keys_are_ignored() {
+        let path = tmp_path("unknown");
+        fs::write(&path, "bogus_key = 1\nbpp = garbage\n[weird]\n").unwrap();
+        let cfg = load_or_create_config(&path);
+        let d = Config::default();
+        assert_eq!(cfg.poll_secs, d.poll_secs);
+        assert_eq!(cfg.grace_secs, d.grace_secs);
+        assert_eq!(cfg.modes.len(), d.modes.len());
+        assert_spec_same(&cfg.auto_game, &d.auto_game);
+        assert_spec_same(&cfg.auto_idle, &d.auto_idle);
+        assert_eq!(cfg.auto_enabled_on_start, d.auto_enabled_on_start);
+        assert_eq!(cfg.gpu_threshold, d.gpu_threshold);
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_legacy_aliases() {
+        let path = tmp_path("legacy");
+        fs::write(&path, "game_hz = 200\nidle_hz = 100\nauto_on_start = false\n").unwrap();
+        let cfg = load_or_create_config(&path);
+        assert_eq!(cfg.auto_game.hz, 200);
+        assert_eq!(cfg.auto_idle.hz, 100);
+        assert!(!cfg.auto_enabled_on_start);
+        let _ = fs::remove_file(&path);
+    }
+}

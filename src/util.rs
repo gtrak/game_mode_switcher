@@ -30,3 +30,46 @@ pub(crate) fn unix_ts() -> u64 {
         .map(|d| d.as_secs())
         .unwrap_or(0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wide_to_string_stops_at_nul() {
+        let v: Vec<u16> = "hi\0".encode_utf16().collect();
+        assert_eq!(wide_to_string(&v), "hi");
+    }
+
+    #[test]
+    fn wide_to_string_empty() {
+        assert_eq!(wide_to_string(&[]), "");
+    }
+
+    #[test]
+    fn wide_to_string_no_nul_reads_full_slice() {
+        let v: Vec<u16> = "hello".encode_utf16().collect();
+        assert_eq!(wide_to_string(&v), "hello");
+    }
+
+    #[test]
+    fn wide_to_string_lone_surrogate_is_lossy() {
+        let v = vec![0xD800u16, 0];
+        assert!(wide_to_string(&v).contains('\u{FFFD}'));
+    }
+
+    #[test]
+    fn to_widez_round_trip() {
+        for s in ["", "abc", "héllo wörld", "日本語"] {
+            assert_eq!(wide_to_string(&to_widez(s)), s);
+        }
+    }
+
+    #[test]
+    fn wide_cstr_terminated_and_unterminated() {
+        let v = to_widez("abc");
+        assert_eq!(wide_cstr(v.as_ptr()), "abc");
+        let v: Vec<u16> = "xyz".encode_utf16().collect();
+        assert_eq!(wide_cstr(v.as_ptr()), "xyz");
+    }
+}
