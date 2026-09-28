@@ -164,6 +164,10 @@ game_hdr = on
 idle_hdr = off
 ```
 
+Set `idle_hdr = restore` instead of `off`/`on` to put the HDR state from
+before the game back when the last game exits (e.g. HDR was off before the
+game, `game_hdr = on` turned it on, and it goes back to off on exit).
+
 ## How game detection works
 
 1. Windows maintains a *Known Games List* under
@@ -190,7 +194,8 @@ undocumented `DisplayConfigSetDeviceInfo` payload types: a type-15 GET
 type-16 SET (size 24) whose payload u32 at offset 20 writes `0` = SDR /
 `1` = HDR — note the *different* encoding between GET and SET. Every SET is
 verified with a follow-up GET; legacy DisplayConfig is kept as a fallback.
-See `src/hdr.rs`.
+See `src/hdr.rs`. The auto HDR settings also accept `restore` (on `idle_hdr`
+only), which puts the pre-game HDR state back when the last game exits.
 
 ## Source layout
 

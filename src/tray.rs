@@ -32,6 +32,7 @@ struct TrayState {
     applied: Option<crate::ModeSpec>,
     auto_sw: crate::auto::AutoSwitcher,
     hdr_on: bool,
+    pre_game_hdr: Option<bool>,
     icon_hdr: HICON,
     icon_sdr: HICON,
 }
@@ -279,7 +280,13 @@ fn apply_target(s: &mut TrayState, spec: crate::ModeSpec, reason: &str) {
 }
 
 fn apply_auto_hdr(s: &mut TrayState, active: bool) {
-    let want = s.cfg.hdr_for(active);
+    let want = match s.cfg.hdr_for(active) {
+        crate::HdrPref::On => Some(true),
+        crate::HdrPref::Off => Some(false),
+        // Default: leave as-is. Restore is only meaningful on idle_hdr
+        // (handled in tick) - treat it as Default on the game side.
+        crate::HdrPref::Default | crate::HdrPref::Restore => None,
+    };
     if let Some(want) = want {
         if want != s.hdr_on {
             match crate::hdr::hdr_set_verified(want) {
@@ -337,6 +344,26 @@ fn tick(s: &mut TrayState) {
         apply_target(s, spec, reason);
     }
     if state_changed {
+        if is_active {
+            // capture the pre-game HDR state once per session
+            if s.pre_game_hdr.is_none() {
+                s.pre_game_hdr = Some(s.hdr_on);
+            }
+        } else if s.cfg.auto_idle_hdr == crate::HdrPref::Restore {
+            if let Some(want) = s.pre_game_hdr {
+                match crate::hdr::hdr_set_verified(want) {
+                    Ok(_) => {
+                        tray_log(&format!("auto hdr restore -> {}", want));
+                        s.hdr_on = want;
+                    }
+                    Err(e) => tray_log(&format!("auto hdr restore failed: {}", e)),
+                }
+            }
+        }
+        if !is_active {
+            // session over: nothing to restore for the next game
+            s.pre_game_hdr = None;
+        }
         apply_auto_hdr(s, is_active);
         s.auto_sw.last_active = Some(is_active);
     }
@@ -535,6 +562,7 @@ pub fn run(cfg: crate::Config) {
             applied: None,
             auto_sw: crate::auto::AutoSwitcher::new(),
             hdr_on: hdr0,
+            pre_game_hdr: None,
             icon_hdr,
             icon_sdr,
         });

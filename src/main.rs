@@ -20,7 +20,7 @@ pub(crate) use display::{
 pub(crate) use util::{pcw, to_widez, unix_ts, wide_to_string};
 
 pub(crate) use config::{
-    config_path, load_or_create_config, mode_spec_label, ModeSpec, CONFIG_NAME, Config,
+    config_path, load_or_create_config, mode_spec_label, HdrPref, ModeSpec, CONFIG_NAME, Config,
 };
 
 pub(crate) use games::{game_active, gpu_loads, running_processes};
@@ -102,6 +102,7 @@ fn cmd_watch(cfg: &Config, dry_run: bool) {
     }
     let mut applied: Option<ModeSpec> = None;
     let mut sw = crate::auto::AutoSwitcher::new();
+    let mut pre_game_hdr: Option<bool> = None;
     loop {
         thread::sleep(Duration::from_secs(cfg.poll_secs.max(1)));
         let procs = running_processes();
@@ -148,10 +149,38 @@ fn cmd_watch(cfg: &Config, dry_run: bool) {
             m.freq
         );
         if !dry_run {
+            if state_changed {
+                if is_active {
+                    // capture the pre-game HDR state once per session
+                    if pre_game_hdr.is_none() {
+                        if let Some(on) = hdr::hdr_enabled() {
+                            pre_game_hdr = Some(on);
+                            println!("[{}] hdr pre-game state: {}", unix_ts(), on);
+                        }
+                    }
+                } else {
+                    if matches!(cfg.auto_idle_hdr, HdrPref::Restore) {
+                        if let Some(want) = pre_game_hdr {
+                            match hdr::hdr_set_verified(want) {
+                                Ok(_) => println!("[{}] hdr restore -> {}", unix_ts(), want),
+                                Err(e) => eprintln!("[{}] hdr restore failed: {}", unix_ts(), e),
+                            }
+                        }
+                    }
+                    // session over: nothing to restore for the next game
+                    pre_game_hdr = None;
+                }
+            }
             if let Err(e) = apply_mode(&o.device_name, m, true) {
                 eprintln!("[{}] apply failed: {}", unix_ts(), e);
             } else {
-                let want = cfg.hdr_for(is_active);
+                let want = match cfg.hdr_for(is_active) {
+                    HdrPref::On => Some(true),
+                    HdrPref::Off => Some(false),
+                    // Default: leave as-is. Restore is only meaningful on
+                    // idle_hdr (handled above) - treat the game side as Default.
+                    HdrPref::Default | HdrPref::Restore => None,
+                };
                 if let Some(want) = want {
                     match hdr::hdr_set_verified(want) {
                         Ok(_) => println!("[{}] hdr -> {}", unix_ts(), want),

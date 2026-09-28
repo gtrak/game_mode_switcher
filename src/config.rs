@@ -53,11 +53,22 @@ fn parse_mode_specs(v: &str) -> Vec<ModeSpec> {
     v.split(',').filter_map(parse_mode_spec).collect()
 }
 
-fn parse_hdr_opt(v: &str) -> Option<bool> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HdrPref {
+    /// no preference - leave HDR as-is
+    Default,
+    On,
+    Off,
+    /// idle_hdr only: restore the pre-game HDR state when the game exits
+    Restore,
+}
+
+fn parse_hdr_opt(v: &str) -> HdrPref {
     match v.trim().to_ascii_lowercase().as_str() {
-        "on" | "true" | "1" | "yes" => Some(true),
-        "off" | "false" | "0" | "no" => Some(false),
-        _ => None,
+        "on" | "true" | "1" | "yes" => HdrPref::On,
+        "off" | "false" | "0" | "no" => HdrPref::Off,
+        "restore" => HdrPref::Restore,
+        _ => HdrPref::Default,
     }
 }
 
@@ -68,8 +79,8 @@ pub(crate) struct Config {
     pub(crate) modes: Vec<ModeSpec>,
     pub(crate) auto_game: ModeSpec,
     pub(crate) auto_idle: ModeSpec,
-    pub(crate) auto_game_hdr: Option<bool>,
-    pub(crate) auto_idle_hdr: Option<bool>,
+    pub(crate) auto_game_hdr: HdrPref,
+    pub(crate) auto_idle_hdr: HdrPref,
     pub(crate) auto_enabled_on_start: bool,
     pub(crate) fullscreen_detect: bool,
     pub(crate) gpu_load_detect: bool,
@@ -88,7 +99,7 @@ impl Config {
         }
     }
 
-    pub(crate) fn hdr_for(&self, active: bool) -> Option<bool> {
+    pub(crate) fn hdr_for(&self, active: bool) -> HdrPref {
         if active {
             self.auto_game_hdr
         } else {
@@ -109,8 +120,8 @@ impl Default for Config {
             ],
             auto_game: ModeSpec { w: 0, h: 0, hz: 240 },
             auto_idle: ModeSpec { w: 0, h: 0, hz: 120 },
-            auto_game_hdr: None,
-            auto_idle_hdr: None,
+            auto_game_hdr: HdrPref::Default,
+            auto_idle_hdr: HdrPref::Default,
             auto_enabled_on_start: true,
             games: Vec::new(),
             games_ignore: Vec::new(),
@@ -144,8 +155,9 @@ modes = 240, 120
 # mode applied when a game is detected / when idle (same syntax as modes)
 game_mode = 240
 idle_mode = 120
-# optionally force HDR when entering game/idle mode (on/off; empty = leave
-# HDR as-is - toggle it any time with a left-click on the tray icon)
+# force HDR when entering game/idle mode: on/off; 'restore' on idle_hdr
+# puts the pre-game HDR state back when the game exits; empty = leave as-is
+# (toggle HDR any time with a left-click on the tray icon)
 game_hdr =
 idle_hdr =
 # run auto on applet / watch launch (syncs mode + HDR immediately)
@@ -334,13 +346,21 @@ mod tests {
     #[test]
     fn parse_hdr_opt_all_values() {
         for t in ["on", "true", "1", "yes", "ON", "True", "YeS"] {
-            assert_eq!(parse_hdr_opt(t), Some(true), "expected true for {t:?}");
+            assert_eq!(parse_hdr_opt(t), HdrPref::On, "expected On for {t:?}");
         }
         for f in ["off", "false", "0", "no", "OFF", "No", "FALSE"] {
-            assert_eq!(parse_hdr_opt(f), Some(false), "expected false for {f:?}");
+            assert_eq!(parse_hdr_opt(f), HdrPref::Off, "expected Off for {f:?}");
         }
-        assert_eq!(parse_hdr_opt(""), None);
-        assert_eq!(parse_hdr_opt("maybe"), None);
+    }
+
+    #[test]
+    fn parse_hdr_opt_restore_and_default_fallbacks() {
+        for t in ["restore", "RESTORE", "Restore", "  restore  "] {
+            assert_eq!(parse_hdr_opt(t), HdrPref::Restore, "expected Restore for {t:?}");
+        }
+        for d in ["", "   ", "maybe", "banana"] {
+            assert_eq!(parse_hdr_opt(d), HdrPref::Default, "expected Default for {d:?}");
+        }
     }
 
     #[test]
@@ -352,15 +372,15 @@ mod tests {
     #[test]
     fn spec_for_and_hdr_for_select_by_active() {
         let c = Config {
-            auto_game_hdr: Some(true),
-            auto_idle_hdr: Some(false),
+            auto_game_hdr: HdrPref::On,
+            auto_idle_hdr: HdrPref::Off,
             ..Default::default()
         };
         assert_spec_same(&c.spec_for(true), &c.auto_game);
         assert_spec_same(&c.spec_for(false), &c.auto_idle);
         assert!(c.spec_for(true).hz != c.spec_for(false).hz);
-        assert_eq!(c.hdr_for(true), Some(true));
-        assert_eq!(c.hdr_for(false), Some(false));
+        assert_eq!(c.hdr_for(true), HdrPref::On);
+        assert_eq!(c.hdr_for(false), HdrPref::Off);
     }
 
     fn tmp_path(name: &str) -> PathBuf {
@@ -426,8 +446,19 @@ mod tests {
         assert_eq!(cfg.modes.len(), 2);
         assert_spec_same(&cfg.modes[0], &mk_spec(0, 0, 240));
         assert_spec_same(&cfg.modes[1], &mk_spec(3840, 2160, 120));
-        assert_eq!(cfg.auto_game_hdr, Some(true));
-        assert_eq!(cfg.auto_idle_hdr, Some(false));
+        assert_eq!(cfg.auto_game_hdr, HdrPref::On);
+        assert_eq!(cfg.auto_idle_hdr, HdrPref::Off);
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_idle_hdr_restore() {
+        let path = tmp_path("restore");
+        fs::write(&path, "idle_hdr = restore\n").unwrap();
+        let cfg = load_or_create_config(&path);
+        let d = Config::default();
+        assert_eq!(cfg.auto_idle_hdr, HdrPref::Restore);
+        assert_eq!(cfg.auto_game_hdr, d.auto_game_hdr);
         let _ = fs::remove_file(&path);
     }
 
