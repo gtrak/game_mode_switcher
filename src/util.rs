@@ -67,9 +67,10 @@ mod tests {
 
     #[test]
     fn wide_cstr_terminated_and_unterminated() {
+        // wide_cstr requires a NUL-terminated buffer; reading an unterminated one is UB
         let v = to_widez("abc");
         assert_eq!(wide_cstr(v.as_ptr()), "abc");
-        let v: Vec<u16> = "xyz".encode_utf16().collect();
-        assert_eq!(wide_cstr(v.as_ptr()), "xyz");
+        let v = to_widez("héllo");
+        assert_eq!(wide_cstr(v.as_ptr()), "héllo");
     }
 }
