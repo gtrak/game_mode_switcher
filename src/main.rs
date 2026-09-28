@@ -24,7 +24,7 @@ mod tray;
 
 use edid::edid_main;
 pub(crate) use games::{
-    config_path, detect_fullscreen_game, game_active, gpu_game_load, load_or_create_config,
+    config_path, detect_fullscreen_game, game_active, gpu_loads, load_or_create_config,
     pick_by_freq, running_processes,
     CONFIG_NAME, Config,
 };
@@ -663,32 +663,41 @@ fn main() {
             let named = cfg
                 .games
                 .iter()
-                .any(|g| procs.iter().any(|p| p.eq_ignore_ascii_case(g)));
+                .any(|g| procs.iter().any(|p| p.name.eq_ignore_ascii_case(g)));
             let kgl = games::known_game_exes();
+            let loads = gpu_loads().unwrap_or_default();
+            let name_of = |pid: u32| {
+                procs
+                    .iter()
+                    .find(|p| p.pid == pid)
+                    .map(|p| p.name.clone())
+                    .unwrap_or_else(|| format!("pid {}", pid))
+            };
             let kgl_hit = !kgl.is_empty()
                 && procs
                     .iter()
-                    .any(|p| kgl.iter().any(|k| p.eq_ignore_ascii_case(k)));
+                    .any(|p| {
+                        kgl.iter().any(|k| p.name.eq_ignore_ascii_case(k))
+                            && loads
+                                .iter()
+                                .any(|(lpid, v)| *lpid == p.pid && *v >= cfg.kgl_min_gpu as f64)
+                    });
             let fs = detect_fullscreen_game();
-            let gpu = match gpu_game_load() {
-                Ok(v) => v,
-                Err(e) => {
-                    println!("[{}] gpu error: {}", unix_ts(), e);
-                    None
-                }
-            };
-            let gpu_hit = gpu.map(|(_, v)| v >= cfg.gpu_threshold as f64).unwrap_or(false);
+            let top: Vec<String> = loads
+                .iter()
+                .take(3)
+                .map(|(pid, v)| format!("{} {:.1}%", name_of(*pid), v))
+                .collect();
+            let gpu_hit = loads.first().map(|(_, v)| *v).unwrap_or(0.0)
+                >= cfg.gpu_threshold as f64;
             println!(
-                "[{}] named={} kgl={} fullscreen={} gpu={}",
+                "[{}] named={} kgl={} fullscreen={} gpu_hit={} top3=[{}]",
                 unix_ts(),
                 named,
                 kgl_hit,
                 fs,
-                match (&gpu, gpu_hit) {
-                    (Some((pid, v)), _) =>
-                        format!("{:.1}% (pid {})", v, pid),
-                    (None, _) => String::from("n/a"),
-                }
+                gpu_hit,
+                top.join(", ")
             );
             std::thread::sleep(Duration::from_secs(2));
         }

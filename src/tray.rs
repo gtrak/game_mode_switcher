@@ -27,6 +27,7 @@ struct TrayState {
     cfg: crate::Config,
     hwnd: HWND,
     auto: bool,
+    manual_hz: Option<u32>,
     current_target: Option<u32>,
     last_seen: Option<Instant>,
     icon_idle: HICON,
@@ -145,6 +146,12 @@ fn apply_target(s: &mut TrayState, hz: u32, reason: &str) {
 }
 
 fn tick(s: &mut TrayState) {
+    if let Some(hz) = s.manual_hz {
+        if s.current_target != Some(hz) {
+            apply_target(s, hz, "manual override");
+        }
+        return;
+    }
     let procs = crate::running_processes();
     let active = crate::game_active(&s.cfg, &procs);
     if active {
@@ -227,6 +234,7 @@ unsafe fn show_menu(s: &mut TrayState, hwnd: HWND) {
             s.auto = !s.auto;
             tray_log(&format!("auto = {}", s.auto));
             if s.auto {
+                s.manual_hz = None;
                 SetTimer(
                     Some(hwnd),
                     TIMER_ID,
@@ -241,8 +249,14 @@ unsafe fn show_menu(s: &mut TrayState, hwnd: HWND) {
                 set_tip(s, &format!("dsc_off: {} (auto off)", current_mode_text()));
             }
         }
-        ID_GAME => apply_target(s, s.cfg.game_hz, "manual"),
-        ID_IDLE => apply_target(s, s.cfg.idle_hz, "manual"),
+        ID_GAME => {
+            s.manual_hz = Some(s.cfg.game_hz);
+            apply_target(s, s.cfg.game_hz, "manual");
+        }
+        ID_IDLE => {
+            s.manual_hz = Some(s.cfg.idle_hz);
+            apply_target(s, s.cfg.idle_hz, "manual");
+        }
         ID_HDR => {
             if let Some(cur) = hdr_cur {
                 match crate::hdr::hdr_set_verified(!cur) {
@@ -344,6 +358,7 @@ pub fn run(cfg: crate::Config) {
             cfg,
             hwnd,
             auto: auto_start,
+            manual_hz: None,
             current_target: None,
             last_seen: None,
             icon_idle,

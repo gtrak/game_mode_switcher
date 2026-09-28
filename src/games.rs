@@ -30,10 +30,10 @@ pub(crate) struct Config {
     pub(crate) fullscreen_detect: bool,
     pub(crate) gpu_load_detect: bool,
     pub(crate) gpu_threshold: u32,
-    pub(crate) gpu_sustain_secs: u64,
-    pub(crate) gpu_fs_threshold: u32,
     pub(crate) auto_on_start: bool,
     pub(crate) games: Vec<String>,
+    pub(crate) games_ignore: Vec<String>,
+    pub(crate) kgl_min_gpu: u32,
 }
 
 impl Default for Config {
@@ -47,12 +47,12 @@ impl Default for Config {
             game_hz: 240,
             idle_hz: 120,
             games: Vec::new(),
-            fullscreen_detect: true,
-            gpu_load_detect: true,
+            games_ignore: Vec::new(),
+            fullscreen_detect: false,
+            gpu_load_detect: false,
             gpu_threshold: 35,
-            gpu_sustain_secs: 10,
-            gpu_fs_threshold: 15,
             auto_on_start: true,
+            kgl_min_gpu: 5,
         }
     }
 }
@@ -81,6 +81,13 @@ idle_hz = 120
 # that Windows has not classified yet
 # example: games = cyberpunk2077.exe, eldenring.exe, hfw.exe
 games =
+
+# Known Games List entries to ignore even when running with GPU load
+# example: games_ignore = robloxplayerbeta.exe, oculus-client.exe
+games_ignore =
+# minimum 3D GPU utilization (%) a Known Games List process must show to
+# count as a running game (background launchers idle near 0%)
+kgl_min_gpu = 5
 
 # ALSO treat the foreground window as a game when it covers the whole
 # monitor without a title bar (can false-positive on fullscreen video;
@@ -149,8 +156,16 @@ pub(crate) fn load_or_create_config(path: &Path) -> Config {
             "gpu_load_detect" => cfg.gpu_load_detect = v.parse().unwrap_or(true),
             "gpu_threshold" => cfg.gpu_threshold = v.parse().unwrap_or(35),
             "auto_on_start" => cfg.auto_on_start = v.parse().unwrap_or(true),
+            "kgl_min_gpu" => cfg.kgl_min_gpu = v.parse().unwrap_or(5),
             "games" => {
                 cfg.games = v
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            }
+            "games_ignore" => {
+                cfg.games_ignore = v
                     .split(',')
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
@@ -162,7 +177,12 @@ pub(crate) fn load_or_create_config(path: &Path) -> Config {
     cfg
 }
 
-pub(crate) fn running_processes() -> Vec<String> {
+pub(crate) struct ProcessInfo {
+    pub(crate) pid: u32,
+    pub(crate) name: String,
+}
+
+pub(crate) fn running_processes() -> Vec<ProcessInfo> {
     let mut out = Vec::new();
     unsafe {
         if let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) {
@@ -177,7 +197,10 @@ pub(crate) fn running_processes() -> Vec<String> {
                         .iter()
                         .position(|&c| c == 0)
                         .unwrap_or(pe.szExeFile.len());
-                    out.push(String::from_utf16_lossy(&pe.szExeFile[..end]));
+                    out.push(ProcessInfo {
+                        pid: pe.th32ProcessID,
+                        name: String::from_utf16_lossy(&pe.szExeFile[..end]),
+                    });
                     if Process32NextW(snap, &mut pe).is_err() {
                         break;
                     }
@@ -189,12 +212,93 @@ pub(crate) fn running_processes() -> Vec<String> {
     out
 }
 
+pub(crate) fn gpu_loads() -> Result<Vec<(u32, f64)>, String> {
+    use windows::Win32::System::Performance::{
+        PdhAddCounterW, PdhCloseQuery, PdhCollectQueryData, PdhGetFormattedCounterArrayW,
+        PdhOpenQueryW, PDH_FMT_COUNTERVALUE_ITEM_W, PDH_FMT_DOUBLE, PDH_HCOUNTER, PDH_HQUERY,
+        PDH_MORE_DATA,
+    };
+    unsafe {
+        let mut query = PDH_HQUERY::default();
+        if PdhOpenQueryW(PCWSTR::null(), 0, &mut query) != 0 {
+            return Err(String::from("PdhOpenQueryW failed"));
+        }
+        let mut counter = PDH_HCOUNTER::default();
+        let path_w = to_widez("\\GPU Engine(*)\\Utilization Percentage");
+        if PdhAddCounterW(query, pcw(&path_w), 0, &mut counter) != 0 {
+            PdhCloseQuery(query);
+            return Err(String::from("PdhAddCounterW failed"));
+        }
+        let c1 = PdhCollectQueryData(query);
+        std::thread::sleep(Duration::from_millis(400));
+        let c2 = PdhCollectQueryData(query);
+        if c1 != 0 || c2 != 0 {
+            PdhCloseQuery(query);
+            return Err(String::from("PdhCollectQueryData failed"));
+        }
+        let mut size = 0u32;
+        let mut count = 0u32;
+        if PdhGetFormattedCounterArrayW(counter, PDH_FMT_DOUBLE, &mut size, &mut count, None)
+            != PDH_MORE_DATA
+        {
+            PdhCloseQuery(query);
+            return Err(String::from("PdhGetFormattedCounterArrayW(size) failed"));
+        }
+        let mut buf = vec![0u8; size as usize];
+        let r = PdhGetFormattedCounterArrayW(
+            counter,
+            PDH_FMT_DOUBLE,
+            &mut size,
+            &mut count,
+            Some(buf.as_mut_ptr() as *mut PDH_FMT_COUNTERVALUE_ITEM_W),
+        );
+        if r != 0 {
+            PdhCloseQuery(query);
+            return Err(format!("PdhGetFormattedCounterArrayW failed ({})", r));
+        }
+        PdhCloseQuery(query);
+        let items =
+            std::slice::from_raw_parts(buf.as_ptr() as *const PDH_FMT_COUNTERVALUE_ITEM_W, count as usize);
+        let mut per_pid: Vec<(u32, f64)> = Vec::new();
+        for item in items {
+            let p = item.szName.0 as *const u16;
+            let mut l = 0usize;
+            while *p.add(l) != 0 {
+                l += 1;
+            }
+            let name = String::from_utf16_lossy(std::slice::from_raw_parts(p, l));
+            let lower = name.to_ascii_lowercase();
+            if !lower.contains("engtype_3d") {
+                continue;
+            }
+            let pid: u32 = name
+                .split("pid_")
+                .nth(1)
+                .and_then(|rest| rest.split('_').next())
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            let v = item.FmtValue.Anonymous.doubleValue;
+            if !v.is_finite() || v < 0.1 {
+                continue;
+            }
+            if let Some(e) = per_pid.iter_mut().find(|(p, _)| *p == pid) {
+                e.1 += v;
+            } else {
+                per_pid.push((pid, v));
+            }
+        }
+        per_pid.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        Ok(per_pid)
+    }
+}
+
 const KGL_PATH: &str = r"System\GameConfigStore\Children";
 const KGL_TTL: Duration = Duration::from_secs(300);
 
-fn kgl_cache() -> &'static std::sync::Mutex<Option<(Instant, Vec<String>)>> {
-    static CACHE: std::sync::OnceLock<std::sync::Mutex<Option<(Instant, Vec<String>)>>> =
-        std::sync::OnceLock::new();
+type KglCache = std::sync::Mutex<Option<(Instant, Vec<String>)>>;
+
+fn kgl_cache() -> &'static KglCache {
+    static CACHE: std::sync::OnceLock<KglCache> = std::sync::OnceLock::new();
     CACHE.get_or_init(|| std::sync::Mutex::new(None))
 }
 
@@ -354,131 +458,51 @@ pub(crate) fn detect_fullscreen_game() -> bool {
     }
 }
 
-pub(crate) fn gpu_game_load() -> Result<Option<(u32, f64)>, String> {
-    let _ = 0; // placeholder removed below
-    use windows::Win32::System::Performance::{
-        PdhAddCounterW, PdhCloseQuery, PdhCollectQueryData, PdhGetFormattedCounterArrayW,
-        PdhOpenQueryW, PDH_FMT_COUNTERVALUE_ITEM_W, PDH_FMT_DOUBLE, PDH_HCOUNTER, PDH_HQUERY,
-        PDH_MORE_DATA,
-    };
-    unsafe {
-        let mut query = PDH_HQUERY::default();
-        if PdhOpenQueryW(PCWSTR::null(), 0, &mut query) != 0 {
-            return Err(String::from("PdhOpenQueryW failed"));
-        }
-        let mut counter = PDH_HCOUNTER::default();
-        let path_w = to_widez("\\GPU Engine(*)\\Utilization Percentage");
-        let add = PdhAddCounterW(query, pcw(&path_w), 0, &mut counter);
-        if add != 0 {
-            PdhCloseQuery(query);
-            return Err(format!("PdhAddCounterW failed ({})", add));
-        }
-        let c1 = PdhCollectQueryData(query);
-        std::thread::sleep(Duration::from_millis(300));
-        let c2 = PdhCollectQueryData(query);
-        if c1 != 0 || c2 != 0 {
-            PdhCloseQuery(query);
-            return Err(String::from("PdhCollectQueryData failed"));
-        }
-        let mut size = 0u32;
-        let mut count = 0u32;
-        let mut r = PdhGetFormattedCounterArrayW(
-            counter,
-            PDH_FMT_DOUBLE,
-            &mut size,
-            &mut count,
-            None,
-        );
-        if r != PDH_MORE_DATA {
-            PdhCloseQuery(query);
-            return Err(format!("PdhGetFormattedCounterArrayW(size) failed ({})", r));
-        }
-        let mut buf = vec![0u8; size as usize];
-        r = PdhGetFormattedCounterArrayW(
-            counter,
-            PDH_FMT_DOUBLE,
-            &mut size,
-            &mut count,
-            Some(buf.as_mut_ptr() as *mut PDH_FMT_COUNTERVALUE_ITEM_W),
-        );
-        if r != 0 {
-            PdhCloseQuery(query);
-            return Err(format!("PdhGetFormattedCounterArrayW failed ({})", r));
-        }
-        PdhCloseQuery(query);
-        let items = std::slice::from_raw_parts(buf.as_ptr() as *const PDH_FMT_COUNTERVALUE_ITEM_W, count as usize);
-        let mut top: Option<(u32, f64)> = None;
-        let mut n3d = 0usize;
-        for item in items {
-            let name_end = item.szName.0 as *const u16;
-            let mut len = 0usize;
-            {
-                while *name_end.add(len) != 0 {
-                    len += 1;
-                }
-            }
-            let name = String::from_utf16_lossy(std::slice::from_raw_parts(name_end, len));
-            if !name.to_ascii_lowercase().contains("engtype_3d") {
-                continue;
-            }
-            n3d += 1;
-            let pid: u32 = name
-                .split('_')
-                .find_map(|t| t.strip_prefix("pid_").and_then(|v| v.parse().ok()))
-                .unwrap_or(0);
-            let v = item.FmtValue.Anonymous.doubleValue;
-            if v.is_finite() && v > top.map(|t| t.1).unwrap_or(0.0) {
-                top = Some((pid, v));
-            }
-        }
-        if n3d == 0 {
-            let mut names = String::new();
-            let mut shown = 0;
-            for item in items {
-                let p = item.szName.0 as *const u16;
-                let mut l = 0usize;
-                while *p.add(l) != 0 {
-                    l += 1;
-                }
-                let n = String::from_utf16_lossy(std::slice::from_raw_parts(p, l));
-                if shown < 8 {
-                    names.push_str(&n);
-                    names.push_str(" | ");
-                    shown += 1;
-                }
-            }
-            return Err(format!("no 3d among {} items; samples: {}", count, names));
-        }
-        Ok(top)
-    }
-}
 
-pub(crate) fn game_active(cfg: &Config, procs: &[String]) -> bool {
+pub(crate) fn game_active(cfg: &Config, procs: &[ProcessInfo]) -> bool {
     if cfg
         .games
         .iter()
-        .any(|g| procs.iter().any(|p| p.eq_ignore_ascii_case(g)))
+        .any(|g| procs.iter().any(|p| p.name.eq_ignore_ascii_case(g)))
     {
         return true;
     }
     let kgl = known_game_exes();
-    if !kgl.is_empty()
-        && procs
+    if !kgl.is_empty() && cfg.kgl_min_gpu > 0 {
+        let loads = gpu_loads().unwrap_or_default();
+        if let Some((matched_pid, matched_name)) = procs
             .iter()
-            .any(|p| kgl.iter().any(|k| p.eq_ignore_ascii_case(k)))
-    {
-        return true;
+            .find(|p| kgl.iter().any(|k| p.name.eq_ignore_ascii_case(k)))
+            .map(|p| (p.pid, p.name.clone()))
+        {
+            if cfg.games_ignore.iter().any(|g| matched_name.eq_ignore_ascii_case(g)) {
+                return false_if_not_fullscreen(cfg);
+            }
+            let load = loads
+                .iter()
+                .find(|(pid, _)| *pid == matched_pid)
+                .map(|(_, v)| *v)
+                .unwrap_or(0.0);
+            if load >= cfg.kgl_min_gpu as f64 {
+                return true;
+            }
+        } else {
+            return false_if_not_fullscreen(cfg);
+        }
     }
     if cfg.fullscreen_detect && detect_fullscreen_game() {
         return true;
     }
     if cfg.gpu_load_detect {
-        if let Ok(Some((pid, load))) = gpu_game_load() {
-            if load >= cfg.gpu_threshold as f64 {
+        if let Ok(loads) = gpu_loads() {
+            if loads.first().map(|(_, v)| *v).unwrap_or(0.0) >= cfg.gpu_threshold as f64 {
                 return true;
             }
-            let _ = pid;
         }
     }
     false
+}
+
+fn false_if_not_fullscreen(cfg: &Config) -> bool {
+    cfg.fullscreen_detect && detect_fullscreen_game()
 }
