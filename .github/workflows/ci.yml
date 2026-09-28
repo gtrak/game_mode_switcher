@@ -8,6 +8,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
   XWIN_CACHE_DIR: ${{ github.workspace }}/.xwin-cache
+  # ubuntu-24.04's wine64 package installs /usr/bin/wine64 but no `wine` wrapper;
+  # cargo-xwin only defaults the runner to `wine` when this var is unset
+  CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER: wine64
 
 jobs:
   ci:
