@@ -389,8 +389,15 @@ pub fn run(cfg: crate::Config) {
                 (state.cfg.poll_secs.max(1) * 1000) as u32,
                 None,
             );
-            tray_log("auto enabled at startup; ticking");
-            tick(&mut state);
+            tray_log("auto enabled at startup; syncing");
+            let procs = crate::running_processes();
+            let active = crate::game_active(&state.cfg, &procs);
+            let hz = if active {
+                state.cfg.game_hz
+            } else {
+                state.cfg.idle_hz
+            };
+            apply_target(&mut state, hz, "startup sync");
         }
 
         let raw = Box::into_raw(state);
