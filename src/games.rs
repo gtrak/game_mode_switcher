@@ -191,8 +191,10 @@ pub(crate) fn known_game_exes() -> Vec<String> {
                         ) == ERROR_SUCCESS
                         {
                             let words: Vec<u16> = buf[..(got as usize & !1)]
-                                .chunks_exact(2)
-                                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                                .as_chunks::<2>()
+                                .0
+                                .iter()
+                                .map(|c| u16::from_le_bytes(*c))
                                 .collect();
                             let wend =
                                 words.iter().position(|&c| c == 0).unwrap_or(words.len());
