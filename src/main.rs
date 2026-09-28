@@ -6,6 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod config;
 mod display;
 mod games;
 mod hdr;
@@ -18,9 +19,12 @@ pub(crate) use display::{
 };
 pub(crate) use util::{pcw, to_widez, unix_ts, wide_to_string};
 
+pub(crate) use config::{
+    config_path, load_or_create_config, mode_spec_label, ModeSpec, CONFIG_NAME, Config,
+};
+
 pub(crate) use games::{
-    config_path, detect_fullscreen_game, game_active, gpu_loads, load_or_create_config,
-    mode_spec_label, pick_mode, running_processes, ModeSpec, CONFIG_NAME, Config,
+    detect_fullscreen_game, game_active, gpu_loads, pick_mode, running_processes,
 };
 
 pub(crate) const PRIMARY_DISPLAY: &str = "\\\\.\\DISPLAY1";
