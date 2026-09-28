@@ -202,4 +202,4 @@ src/util.rs     string and time helpers
 
 ## License
 
-Not yet chosen — add a LICENSE before distributing.
+MIT — see [LICENSE](LICENSE).
