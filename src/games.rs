@@ -11,8 +11,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetWindowLongPtrW, GetWindowRect, IsIconic, IsWindowVisible, GWL_STYLE,
 };
 
-use crate::config::{Config, ModeSpec};
-use crate::{find_output, pcw, to_widez, Mode, Output};
+use crate::config::Config;
+use crate::{pcw, to_widez};
 pub(crate) struct ProcessInfo {
     pub(crate) pid: u32,
     pub(crate) name: String,
@@ -230,38 +230,6 @@ pub(crate) fn known_game_exes() -> Vec<String> {
     list
 }
 
-pub(crate) fn pick_mode<'a>(
-    outs: &'a [Output],
-    device: &Option<String>,
-    spec: &ModeSpec,
-) -> Option<(&'a Output, Mode)> {
-    let o = find_output(outs, device);
-    let cur = o.current?;
-    let (tw, th) = if spec.w != 0 {
-        (spec.w, spec.h)
-    } else {
-        (cur.w, cur.h)
-    };
-    let target_hz = if spec.hz != 0 { spec.hz } else { cur.freq };
-    let mut best_le: Option<Mode> = None;
-    let mut best_gt: Option<Mode> = None;
-    for m in &o.modes {
-        if m.w != tw || m.h != th {
-            continue;
-        }
-        if m.freq <= target_hz {
-            if best_le.map(|b| m.freq > b.freq).unwrap_or(true) {
-                best_le = Some(*m);
-            }
-        } else if best_gt.map(|b| m.freq < b.freq).unwrap_or(true) {
-            best_gt = Some(*m);
-        }
-    }
-    best_le
-        .or(best_gt)
-        .map(|m| (o, m))
-}
-
 pub(crate) fn detect_fullscreen_game() -> bool {
     const TOL: i32 = 2;
     const WS_CAPTION: u32 = 0x00C0_0000;
@@ -301,50 +269,69 @@ pub(crate) fn detect_fullscreen_game() -> bool {
 }
 
 
-pub(crate) fn game_active(cfg: &Config, procs: &[ProcessInfo]) -> bool {
-    if cfg
+pub(crate) struct DetectSignals {
+    pub(crate) named: bool,
+    pub(crate) kgl: bool,
+    pub(crate) fullscreen: bool,
+    pub(crate) gpu: bool,
+}
+
+pub(crate) fn detect_signals(cfg: &Config, procs: &[ProcessInfo]) -> DetectSignals {
+    let named = cfg
         .games
         .iter()
-        .any(|g| procs.iter().any(|p| p.name.eq_ignore_ascii_case(g)))
-    {
-        return true;
-    }
-    let kgl = known_game_exes();
-    if !kgl.is_empty() && cfg.kgl_min_gpu > 0 {
+        .any(|g| procs.iter().any(|p| p.name.eq_ignore_ascii_case(g)));
+    let mut kgl = false;
+    // early-exit flag: when the KGL branch resolves (ignored match or no
+    // match), game_active returns before the gpu_load_detect check
+    let mut kgl_early_exit = false;
+    let kgl_list = known_game_exes();
+    if !kgl_list.is_empty() && cfg.kgl_min_gpu > 0 {
         let loads = gpu_loads().unwrap_or_default();
         if let Some((matched_pid, matched_name)) = procs
             .iter()
-            .find(|p| kgl.iter().any(|k| p.name.eq_ignore_ascii_case(k)))
+            .find(|p| kgl_list.iter().any(|k| p.name.eq_ignore_ascii_case(k)))
             .map(|p| (p.pid, p.name.clone()))
         {
             if cfg.games_ignore.iter().any(|g| matched_name.eq_ignore_ascii_case(g)) {
-                return false_if_not_fullscreen(cfg);
-            }
-            let load = loads
-                .iter()
-                .find(|(pid, _)| *pid == matched_pid)
-                .map(|(_, v)| *v)
-                .unwrap_or(0.0);
-            if load >= cfg.kgl_min_gpu as f64 {
-                return true;
+                kgl_early_exit = true;
+            } else {
+                let load = loads
+                    .iter()
+                    .find(|(pid, _)| *pid == matched_pid)
+                    .map(|(_, v)| *v)
+                    .unwrap_or(0.0);
+                if load >= cfg.kgl_min_gpu as f64 {
+                    kgl = true;
+                }
             }
         } else {
-            return false_if_not_fullscreen(cfg);
+            kgl_early_exit = true;
         }
     }
-    if cfg.fullscreen_detect && detect_fullscreen_game() {
-        return true;
-    }
-    if cfg.gpu_load_detect {
-        if let Ok(loads) = gpu_loads() {
-            if loads.first().map(|(_, v)| *v).unwrap_or(0.0) >= cfg.gpu_threshold as f64 {
-                return true;
+    let fullscreen = cfg.fullscreen_detect && detect_fullscreen_game();
+    let gpu = if !kgl_early_exit {
+        if cfg.gpu_load_detect {
+            if let Ok(loads) = gpu_loads() {
+                loads.first().map(|(_, v)| *v).unwrap_or(0.0) >= cfg.gpu_threshold as f64
+            } else {
+                false
             }
+        } else {
+            false
         }
+    } else {
+        false
+    };
+    DetectSignals {
+        named,
+        kgl,
+        fullscreen,
+        gpu,
     }
-    false
 }
 
-fn false_if_not_fullscreen(cfg: &Config) -> bool {
-    cfg.fullscreen_detect && detect_fullscreen_game()
+pub(crate) fn game_active(cfg: &Config, procs: &[ProcessInfo]) -> bool {
+    let s = detect_signals(cfg, procs);
+    s.named || s.kgl || s.fullscreen || s.gpu
 }

@@ -14,18 +14,14 @@ mod nvapi;
 mod tray;
 mod util;
 
-pub(crate) use display::{
-    apply_mode, enumerate_outputs, find_output, print_mode_line, Mode, Output,
-};
+pub(crate) use display::{apply_mode, enumerate_outputs, find_output, pick_mode, print_mode_line};
 pub(crate) use util::{pcw, to_widez, unix_ts, wide_to_string};
 
 pub(crate) use config::{
     config_path, load_or_create_config, mode_spec_label, ModeSpec, CONFIG_NAME, Config,
 };
 
-pub(crate) use games::{
-    detect_fullscreen_game, game_active, gpu_loads, pick_mode, running_processes,
-};
+pub(crate) use games::{game_active, gpu_loads, running_processes};
 
 pub(crate) const PRIMARY_DISPLAY: &str = "\\\\.\\DISPLAY1";
 
@@ -114,17 +110,18 @@ fn cmd_watch(cfg: &Config, dry_run: bool) {
         if active {
             last_seen = Some(Instant::now());
         }
-        let (spec, is_active) = if active {
-            (cfg.auto_game, true)
+        let is_active = if active {
+            true
         } else if last_seen
             .map(|t| t.elapsed().as_secs() >= cfg.grace_secs)
             .unwrap_or(false)
         {
             last_seen = None;
-            (cfg.auto_idle, false)
+            false
         } else {
             continue;
         };
+        let spec = cfg.spec_for(is_active);
         let state_changed = last_active != Some(is_active);
         if applied == Some(spec) && !state_changed {
             continue;
@@ -166,11 +163,7 @@ fn cmd_watch(cfg: &Config, dry_run: bool) {
             if let Err(e) = apply_mode(&o.device_name, m, true) {
                 eprintln!("[{}] apply failed: {}", unix_ts(), e);
             } else {
-                let want = if is_active {
-                    cfg.auto_game_hdr
-                } else {
-                    cfg.auto_idle_hdr
-                };
+                let want = cfg.hdr_for(is_active);
                 if let Some(want) = want {
                     match hdr::hdr_set_verified(want) {
                         Ok(_) => println!("[{}] hdr -> {}", unix_ts(), want),
@@ -316,11 +309,7 @@ fn cmd_detect() {
     );
     loop {
         let procs = running_processes();
-        let named = cfg
-            .games
-            .iter()
-            .any(|g| procs.iter().any(|p| p.name.eq_ignore_ascii_case(g)));
-        let kgl = games::known_game_exes();
+        let sig = games::detect_signals(&cfg, &procs);
         let loads = gpu_loads().unwrap_or_default();
         let name_of = |pid: u32| {
             procs
@@ -329,30 +318,18 @@ fn cmd_detect() {
                 .map(|p| p.name.clone())
                 .unwrap_or_else(|| format!("pid {}", pid))
         };
-        let kgl_hit = !kgl.is_empty()
-            && procs
-                .iter()
-                .any(|p| {
-                    kgl.iter().any(|k| p.name.eq_ignore_ascii_case(k))
-                        && loads
-                            .iter()
-                            .any(|(lpid, v)| *lpid == p.pid && *v >= cfg.kgl_min_gpu as f64)
-                });
-        let fs = detect_fullscreen_game();
         let top: Vec<String> = loads
             .iter()
             .take(3)
             .map(|(pid, v)| format!("{} {:.1}%", name_of(*pid), v))
             .collect();
-        let gpu_hit = loads.first().map(|(_, v)| *v).unwrap_or(0.0)
-            >= cfg.gpu_threshold as f64;
         println!(
             "[{}] named={} kgl={} fullscreen={} gpu_hit={} top3=[{}]",
             unix_ts(),
-            named,
-            kgl_hit,
-            fs,
-            gpu_hit,
+            sig.named,
+            sig.kgl,
+            sig.fullscreen,
+            sig.gpu,
             top.join(", ")
         );
         std::thread::sleep(Duration::from_secs(2));

@@ -79,6 +79,24 @@ pub(crate) struct Config {
     pub(crate) kgl_min_gpu: u32,
 }
 
+impl Config {
+    pub(crate) fn spec_for(&self, active: bool) -> ModeSpec {
+        if active {
+            self.auto_game
+        } else {
+            self.auto_idle
+        }
+    }
+
+    pub(crate) fn hdr_for(&self, active: bool) -> Option<bool> {
+        if active {
+            self.auto_game_hdr
+        } else {
+            self.auto_idle_hdr
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Config {

@@ -8,6 +8,7 @@ use windows::Win32::Graphics::Gdi::{
     ENUM_DISPLAY_SETTINGS_MODE,
 };
 
+use crate::config::ModeSpec;
 use crate::util::{pcw, wide_to_string};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -156,6 +157,38 @@ pub(crate) fn find_output<'a>(outs: &'a [Output], device: &Option<String>) -> &'
         exit(2);
     }
     outs.first().expect("no active display outputs found")
+}
+
+pub(crate) fn pick_mode<'a>(
+    outs: &'a [Output],
+    device: &Option<String>,
+    spec: &ModeSpec,
+) -> Option<(&'a Output, Mode)> {
+    let o = find_output(outs, device);
+    let cur = o.current?;
+    let (tw, th) = if spec.w != 0 {
+        (spec.w, spec.h)
+    } else {
+        (cur.w, cur.h)
+    };
+    let target_hz = if spec.hz != 0 { spec.hz } else { cur.freq };
+    let mut best_le: Option<Mode> = None;
+    let mut best_gt: Option<Mode> = None;
+    for m in &o.modes {
+        if m.w != tw || m.h != th {
+            continue;
+        }
+        if m.freq <= target_hz {
+            if best_le.map(|b| m.freq > b.freq).unwrap_or(true) {
+                best_le = Some(*m);
+            }
+        } else if best_gt.map(|b| m.freq < b.freq).unwrap_or(true) {
+            best_gt = Some(*m);
+        }
+    }
+    best_le
+        .or(best_gt)
+        .map(|m| (o, m))
 }
 
 pub(crate) fn print_mode_line(m: Mode, current: &Option<Mode>) {

@@ -192,11 +192,7 @@ fn apply_target(s: &mut TrayState, spec: crate::ModeSpec, reason: &str) {
 }
 
 fn apply_auto_hdr(s: &mut TrayState, active: bool) {
-    let want = if active {
-        s.cfg.auto_game_hdr
-    } else {
-        s.cfg.auto_idle_hdr
-    };
+    let want = s.cfg.hdr_for(active);
     if let Some(want) = want {
         if want != s.hdr_on {
             match crate::hdr::hdr_set_verified(want) {
@@ -250,18 +246,19 @@ fn tick(s: &mut TrayState) {
     if active {
         s.last_seen = Some(Instant::now());
     }
-    let (spec, is_active, reason) = if active {
-        (s.cfg.auto_game, true, "game running")
+    let (is_active, reason) = if active {
+        (true, "game running")
     } else if let Some(t) = s.last_seen {
         if t.elapsed().as_secs() >= s.cfg.grace_secs {
             s.last_seen = None;
-            (s.cfg.auto_idle, false, "idle")
+            (false, "idle")
         } else {
             return;
         }
     } else {
         return;
     };
+    let spec = s.cfg.spec_for(is_active);
     let state_changed = s.last_active != Some(is_active);
     if s.applied != Some(spec) {
         apply_target(s, spec, reason);
@@ -340,11 +337,7 @@ unsafe fn show_menu(s: &mut TrayState, hwnd: HWND) {
                 tray_log("auto = true");
                 let procs = crate::running_processes();
                 let active = crate::game_active(&s.cfg, &procs);
-                let spec = if active {
-                    s.cfg.auto_game
-                } else {
-                    s.cfg.auto_idle
-                };
+                let spec = s.cfg.spec_for(active);
                 apply_target(s, spec, "auto resume");
                 apply_auto_hdr(s, active);
                 s.last_active = Some(active);
@@ -480,11 +473,7 @@ pub fn run(cfg: crate::Config) {
             tray_log("auto enabled at startup; syncing");
             let procs = crate::running_processes();
             let active = crate::game_active(&state.cfg, &procs);
-            let spec = if active {
-                state.cfg.auto_game
-            } else {
-                state.cfg.auto_idle
-            };
+            let spec = state.cfg.spec_for(active);
             apply_target(&mut state, spec, "startup sync");
             apply_auto_hdr(&mut state, active);
             state.last_active = Some(active);
