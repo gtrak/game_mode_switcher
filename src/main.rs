@@ -25,8 +25,7 @@ mod tray;
 use edid::edid_main;
 pub(crate) use games::{
     config_path, detect_fullscreen_game, game_active, gpu_loads, load_or_create_config,
-    pick_by_freq, running_processes,
-    CONFIG_NAME, Config,
+    mode_spec_label, pick_mode, running_processes, ModeSpec, CONFIG_NAME, Config,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -315,8 +314,9 @@ fn cmd_watch(cfg: &Config, dry_run: bool) {
     for g in &cfg.games {
         println!("  watching: {}", g);
     }
-    let mut applied: Option<u32> = None;
+    let mut applied: Option<ModeSpec> = None;
     let mut last_seen: Option<Instant> = None;
+    let mut last_active: Option<bool> = None;
     loop {
         thread::sleep(Duration::from_secs(cfg.poll_secs.max(1)));
         let procs = running_processes();
@@ -324,40 +324,42 @@ fn cmd_watch(cfg: &Config, dry_run: bool) {
         if active {
             last_seen = Some(Instant::now());
         }
-        let target_hz = if active {
-            Some(cfg.auto_game_hz)
+        let (spec, is_active) = if active {
+            (cfg.auto_game, true)
         } else if last_seen
             .map(|t| t.elapsed().as_secs() >= cfg.grace_secs)
             .unwrap_or(false)
         {
             last_seen = None;
-            Some(cfg.auto_idle_hz)
+            (cfg.auto_idle, false)
         } else {
-            None
-        };
-        let Some(hz) = target_hz else {
             continue;
         };
-        if applied == Some(hz) {
+        let state_changed = last_active != Some(is_active);
+        if applied == Some(spec) && !state_changed {
             continue;
         }
         let outs = enumerate_outputs();
-        let Some((o, m)) = pick_by_freq(&outs, &cfg.device, hz) else {
-            println!("[{}] no mode available at current resolution", unix_ts());
-            applied = Some(hz);
+        let Some((o, m)) = pick_mode(&outs, &cfg.device, &spec) else {
+            println!(
+                "[{}] no mode for {} at this resolution",
+                unix_ts(),
+                mode_spec_label(&spec)
+            );
+            applied = Some(spec);
             continue;
         };
-        if m.freq != hz {
+        if spec.hz != 0 && m.freq != spec.hz {
             println!(
-                "[{}] {} Hz unavailable at {}x{}; closest is {} Hz",
+                "[{}] {} unavailable; closest is {}x{} @ {} Hz",
                 unix_ts(),
-                hz,
+                mode_spec_label(&spec),
                 m.w,
                 m.h,
                 m.freq
             );
         }
-        let reason = if active {
+        let reason = if is_active {
             "game detected"
         } else {
             "idle grace elapsed"
@@ -373,9 +375,22 @@ fn cmd_watch(cfg: &Config, dry_run: bool) {
         if !dry_run {
             if let Err(e) = apply_mode(&o.device_name, m, true) {
                 eprintln!("[{}] apply failed: {}", unix_ts(), e);
+            } else {
+                let want = if is_active {
+                    cfg.auto_game_hdr
+                } else {
+                    cfg.auto_idle_hdr
+                };
+                if let Some(want) = want {
+                    match hdr::hdr_set_verified(want) {
+                        Ok(_) => println!("[{}] hdr -> {}", unix_ts(), want),
+                        Err(e) => eprintln!("[{}] hdr set failed: {}", unix_ts(), e),
+                    }
+                }
             }
         }
-        applied = Some(hz);
+        applied = Some(spec);
+        last_active = Some(is_active);
     }
 }
 
@@ -398,13 +413,14 @@ COMMANDS:
   on                Restore the highest-refresh mode (DSC resumes if needed)
   test [--secs N]   Apply DSC-off mode for N seconds, then restore (default 10)
   watch [--dry-run] [--config FILE]
-                    Auto-switch by game detection: while a configured game
-                    process runs, apply auto_game_hz; grace_secs after the last
-                    game exits, fall back to auto_idle_hz. Reads dsc_off.ini
-                    next to the exe (created on first run).
+                    Auto-switch by game detection: while a game runs apply
+                    game_mode (and game_hdr if set); grace_secs after the
+                    last game exits, fall back to idle_mode/idle_hdr. Reads
+                    dsc_off.ini next to the exe (created on first run).
   config            Create/print the config file location
-  applet            Launch the system tray applet (detached; icon menu:
-                    Auto / game Hz / idle Hz / HDR / Exit; same dsc_off.ini)
+  applet            Launch the system tray applet (detached; left-click
+                    toggles HDR, right-click menu: modes / Auto / Exit;
+                    same dsc_off.ini)
   hdr [status|on|off|toggle]
                     Show or set Windows HDR on the primary display.
                     Uses the undocumented DisplayConfig type 16 advanced-color

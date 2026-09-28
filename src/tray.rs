@@ -29,8 +29,9 @@ struct TrayState {
     cfg: crate::Config,
     hwnd: HWND,
     auto: bool,
-    manual_hz: Option<u32>,
-    current_target: Option<u32>,
+    manual: Option<crate::ModeSpec>,
+    applied: Option<crate::ModeSpec>,
+    last_active: Option<bool>,
     last_seen: Option<Instant>,
     hdr_on: bool,
     icon_hdr: HICON,
@@ -131,11 +132,11 @@ unsafe fn make_text_icon(text: &str, bg: COLORREF) -> HICON {
 }
 
 fn hdr_hz_text(s: &TrayState) -> String {
-    let hz = s
-        .current_target
-        .map(|h| h.to_string())
-        .unwrap_or_else(|| "?".into());
-    let mode = if s.manual_hz.is_some() {
+    let target = match s.applied {
+        Some(sp) => crate::mode_spec_label(&sp),
+        None => "?".into(),
+    };
+    let mode = if s.manual.is_some() {
         "manual"
     } else if s.auto {
         "auto"
@@ -143,9 +144,9 @@ fn hdr_hz_text(s: &TrayState) -> String {
         "off"
     };
     format!(
-        "dsc_off: {} | {} Hz ({})",
+        "dsc_off: {} | {} ({})",
         if s.hdr_on { "HDR" } else { "SDR" },
-        hz,
+        target,
         mode
     )
 }
@@ -168,22 +169,46 @@ fn update_icon(s: &mut TrayState) {
     }
 }
 
-fn apply_target(s: &mut TrayState, hz: u32, reason: &str) {
+fn apply_target(s: &mut TrayState, spec: crate::ModeSpec, reason: &str) {
     let outs = crate::enumerate_outputs();
-    let mut desc = String::from("no mode available");
-    match crate::pick_by_freq(&outs, &s.cfg.device, hz) {
+    match crate::pick_mode(&outs, &s.cfg.device, &spec) {
         Some((o, m)) => match crate::apply_mode(&o.device_name, m, true) {
             Ok(()) => {
-                desc = format!("{}x{} @ {} Hz", m.w, m.h, m.freq);
-                tray_log(&format!("applied {} ({})", desc, reason));
+                tray_log(&format!(
+                    "applied {}x{} @ {} Hz ({})",
+                    m.w, m.h, m.freq, reason
+                ));
             }
             Err(e) => tray_log(&format!("apply failed: {}", e)),
         },
-        None => tray_log(&format!("no mode for {} Hz target ({})", hz, reason)),
+        None => tray_log(&format!(
+            "no mode for {} ({})",
+            crate::mode_spec_label(&spec),
+            reason
+        )),
     }
-    s.current_target = Some(hz);
+    s.applied = Some(spec);
     update_icon(s);
-    let _ = desc;
+}
+
+fn apply_auto_hdr(s: &mut TrayState, active: bool) {
+    let want = if active {
+        s.cfg.auto_game_hdr
+    } else {
+        s.cfg.auto_idle_hdr
+    };
+    if let Some(want) = want {
+        if want != s.hdr_on {
+            match crate::hdr::hdr_set_verified(want) {
+                Ok(_) => {
+                    tray_log(&format!("auto hdr -> {}", want));
+                    s.hdr_on = want;
+                }
+                Err(e) => tray_log(&format!("auto hdr failed: {}", e)),
+            }
+        }
+    }
+    update_icon(s);
 }
 
 fn poll_hdr(s: &mut TrayState) {
@@ -211,9 +236,9 @@ fn toggle_hdr(s: &mut TrayState) {
 
 fn tick(s: &mut TrayState) {
     poll_hdr(s);
-    if let Some(hz) = s.manual_hz {
-        if s.current_target != Some(hz) {
-            apply_target(s, hz, "manual override");
+    if let Some(spec) = s.manual {
+        if s.applied != Some(spec) {
+            apply_target(s, spec, "manual override");
         }
         return;
     }
@@ -225,22 +250,26 @@ fn tick(s: &mut TrayState) {
     if active {
         s.last_seen = Some(Instant::now());
     }
-    let (hz, reason) = if active {
-        (s.cfg.auto_game_hz, "game running")
+    let (spec, is_active, reason) = if active {
+        (s.cfg.auto_game, true, "game running")
     } else if let Some(t) = s.last_seen {
         if t.elapsed().as_secs() >= s.cfg.grace_secs {
             s.last_seen = None;
-            (s.cfg.auto_idle_hz, "idle")
+            (s.cfg.auto_idle, false, "idle")
         } else {
             return;
         }
     } else {
         return;
     };
-    if s.current_target == Some(hz) {
-        return;
+    let state_changed = s.last_active != Some(is_active);
+    if s.applied != Some(spec) {
+        apply_target(s, spec, reason);
     }
-    apply_target(s, hz, reason);
+    if state_changed {
+        apply_auto_hdr(s, is_active);
+        s.last_active = Some(is_active);
+    }
 }
 
 unsafe fn show_menu(s: &mut TrayState, hwnd: HWND) {
@@ -256,9 +285,9 @@ unsafe fn show_menu(s: &mut TrayState, hwnd: HWND) {
         PCWSTR::from_raw(status_w.as_ptr()),
     );
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-    for (i, hz) in s.cfg.manual_modes.iter().enumerate() {
-        let label = crate::to_widez(&format!("{} Hz", hz));
-        let checked = s.manual_hz == Some(*hz);
+    for (i, sp) in s.cfg.modes.iter().enumerate() {
+        let label = crate::to_widez(&crate::mode_spec_label(sp));
+        let checked = s.manual == Some(*sp);
         let flags = if checked { MF_STRING | MF_CHECKED } else { MF_STRING };
         let _ = AppendMenuW(
             menu,
@@ -268,7 +297,7 @@ unsafe fn show_menu(s: &mut TrayState, hwnd: HWND) {
         );
     }
     let auto_label = crate::to_widez("Auto");
-    let auto_checked = s.auto && s.manual_hz.is_none();
+    let auto_checked = s.auto && s.manual.is_none();
     let auto_flags = if auto_checked { MF_STRING | MF_CHECKED } else { MF_STRING };
     let _ = AppendMenuW(
         menu,
@@ -287,33 +316,38 @@ unsafe fn show_menu(s: &mut TrayState, hwnd: HWND) {
     let id = TrackPopupMenuEx(menu, flags, pt.x, pt.y, hwnd, None).0 as u32 as usize;
     let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
     let _ = DestroyMenu(menu);
-    if id >= ID_MANUAL0 && id < ID_MANUAL0 + s.cfg.manual_modes.len() {
-        let hz = s.cfg.manual_modes[id - ID_MANUAL0];
-        s.manual_hz = Some(hz);
+    if id >= ID_MANUAL0 && id < ID_MANUAL0 + s.cfg.modes.len() {
+        let spec = s.cfg.modes[id - ID_MANUAL0];
+        s.manual = Some(spec);
         s.auto = false;
-        tray_log(&format!("manual = {} Hz (auto off)", hz));
-        apply_target(s, hz, "manual");
+        tray_log(&format!(
+            "manual = {} (auto off)",
+            crate::mode_spec_label(&spec)
+        ));
+        apply_target(s, spec, "manual");
         return;
     }
     match id {
         ID_AUTO => {
-            if s.auto && s.manual_hz.is_none() {
+            if s.auto && s.manual.is_none() {
                 s.auto = false;
                 s.last_seen = None;
                 tray_log("auto = false");
                 update_icon(s);
             } else {
                 s.auto = true;
-                s.manual_hz = None;
+                s.manual = None;
                 tray_log("auto = true");
                 let procs = crate::running_processes();
                 let active = crate::game_active(&s.cfg, &procs);
-                let hz = if active {
-                    s.cfg.auto_game_hz
+                let spec = if active {
+                    s.cfg.auto_game
                 } else {
-                    s.cfg.auto_idle_hz
+                    s.cfg.auto_idle
                 };
-                apply_target(s, hz, "auto resume");
+                apply_target(s, spec, "auto resume");
+                apply_auto_hdr(s, active);
+                s.last_active = Some(active);
             }
         }
         ID_EXIT => {
@@ -406,14 +440,15 @@ pub fn run(cfg: crate::Config) {
                 return;
             }
         };
-        let auto_start = cfg.auto_on_start;
+        let auto_start = cfg.auto_enabled_on_start;
         let hdr0 = crate::hdr::hdr_enabled().unwrap_or(false);
         let mut state = Box::new(TrayState {
             cfg,
             hwnd,
             auto: auto_start,
-            manual_hz: None,
-            current_target: None,
+            manual: None,
+            applied: None,
+            last_active: None,
             last_seen: None,
             hdr_on: hdr0,
             icon_hdr,
@@ -445,12 +480,14 @@ pub fn run(cfg: crate::Config) {
             tray_log("auto enabled at startup; syncing");
             let procs = crate::running_processes();
             let active = crate::game_active(&state.cfg, &procs);
-            let hz = if active {
-                state.cfg.auto_game_hz
+            let spec = if active {
+                state.cfg.auto_game
             } else {
-                state.cfg.auto_idle_hz
+                state.cfg.auto_idle
             };
-            apply_target(&mut state, hz, "startup sync");
+            apply_target(&mut state, spec, "startup sync");
+            apply_auto_hdr(&mut state, active);
+            state.last_active = Some(active);
         } else {
             update_icon(&mut state);
         }
