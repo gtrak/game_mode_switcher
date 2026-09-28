@@ -3,9 +3,10 @@ use std::{
     path::PathBuf,
     process::exit,
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
+mod auto;
 mod config;
 mod display;
 mod games;
@@ -101,28 +102,16 @@ fn cmd_watch(cfg: &Config, dry_run: bool) {
         println!("  watching: {}", g);
     }
     let mut applied: Option<ModeSpec> = None;
-    let mut last_seen: Option<Instant> = None;
-    let mut last_active: Option<bool> = None;
+    let mut sw = crate::auto::AutoSwitcher::new();
     loop {
         thread::sleep(Duration::from_secs(cfg.poll_secs.max(1)));
         let procs = running_processes();
         let active = game_active(cfg, &procs);
-        if active {
-            last_seen = Some(Instant::now());
-        }
-        let is_active = if active {
-            true
-        } else if last_seen
-            .map(|t| t.elapsed().as_secs() >= cfg.grace_secs)
-            .unwrap_or(false)
-        {
-            last_seen = None;
-            false
-        } else {
+        // watch keeps its own reason phrasing below ("game detected" /
+        // "idle grace elapsed"); the reason returned by step is ignored.
+        let Some((spec, is_active, state_changed, _reason)) = sw.step(cfg, active) else {
             continue;
         };
-        let spec = cfg.spec_for(is_active);
-        let state_changed = last_active != Some(is_active);
         if applied == Some(spec) && !state_changed {
             continue;
         }
@@ -173,7 +162,7 @@ fn cmd_watch(cfg: &Config, dry_run: bool) {
             }
         }
         applied = Some(spec);
-        last_active = Some(is_active);
+        sw.last_active = Some(is_active);
     }
 }
 

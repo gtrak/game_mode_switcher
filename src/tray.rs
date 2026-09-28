@@ -1,5 +1,3 @@
-use std::time::Instant;
-
 use windows::core::{w, BOOL, PCWSTR};
 use windows::Win32::Foundation::{COLORREF, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
@@ -31,8 +29,7 @@ struct TrayState {
     auto: bool,
     manual: Option<crate::ModeSpec>,
     applied: Option<crate::ModeSpec>,
-    last_active: Option<bool>,
-    last_seen: Option<Instant>,
+    auto_sw: crate::auto::AutoSwitcher,
     hdr_on: bool,
     icon_hdr: HICON,
     icon_sdr: HICON,
@@ -243,29 +240,15 @@ fn tick(s: &mut TrayState) {
     }
     let procs = crate::running_processes();
     let active = crate::game_active(&s.cfg, &procs);
-    if active {
-        s.last_seen = Some(Instant::now());
-    }
-    let (is_active, reason) = if active {
-        (true, "game running")
-    } else if let Some(t) = s.last_seen {
-        if t.elapsed().as_secs() >= s.cfg.grace_secs {
-            s.last_seen = None;
-            (false, "idle")
-        } else {
-            return;
-        }
-    } else {
+    let Some((spec, is_active, state_changed, reason)) = s.auto_sw.step(&s.cfg, active) else {
         return;
     };
-    let spec = s.cfg.spec_for(is_active);
-    let state_changed = s.last_active != Some(is_active);
     if s.applied != Some(spec) {
         apply_target(s, spec, reason);
     }
     if state_changed {
         apply_auto_hdr(s, is_active);
-        s.last_active = Some(is_active);
+        s.auto_sw.last_active = Some(is_active);
     }
 }
 
@@ -328,7 +311,7 @@ unsafe fn show_menu(s: &mut TrayState, hwnd: HWND) {
         ID_AUTO => {
             if s.auto && s.manual.is_none() {
                 s.auto = false;
-                s.last_seen = None;
+                s.auto_sw.last_seen = None;
                 tray_log("auto = false");
                 update_icon(s);
             } else {
@@ -340,7 +323,7 @@ unsafe fn show_menu(s: &mut TrayState, hwnd: HWND) {
                 let spec = s.cfg.spec_for(active);
                 apply_target(s, spec, "auto resume");
                 apply_auto_hdr(s, active);
-                s.last_active = Some(active);
+                s.auto_sw.last_active = Some(active);
             }
         }
         ID_EXIT => {
@@ -441,8 +424,7 @@ pub fn run(cfg: crate::Config) {
             auto: auto_start,
             manual: None,
             applied: None,
-            last_active: None,
-            last_seen: None,
+            auto_sw: crate::auto::AutoSwitcher::new(),
             hdr_on: hdr0,
             icon_hdr,
             icon_sdr,
@@ -476,7 +458,7 @@ pub fn run(cfg: crate::Config) {
             let spec = state.cfg.spec_for(active);
             apply_target(&mut state, spec, "startup sync");
             apply_auto_hdr(&mut state, active);
-            state.last_active = Some(active);
+            state.auto_sw.last_active = Some(active);
         } else {
             update_icon(&mut state);
         }
