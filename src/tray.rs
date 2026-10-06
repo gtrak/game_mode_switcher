@@ -158,7 +158,7 @@ const RUN_SUBKEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const AUTOSTART_VALUE: &str = "game_mode_switcher";
 
 /// True if the HKCU Run key holds a non-empty `game_mode_switcher` value.
-fn run_key_set() -> bool {
+fn autostart_enabled() -> bool {
     unsafe {
         use windows::Win32::Foundation::ERROR_SUCCESS;
         use windows::Win32::System::Registry::{
@@ -187,72 +187,8 @@ fn run_key_set() -> bool {
     }
 }
 
-const WATCHDOG_TASK: &str = "game_mode_switcher_watchdog";
-
-/// True if the `game_mode_switcher_watchdog` scheduled task exists.
-fn watchdog_task_exists() -> bool {
-    match std::process::Command::new("schtasks")
-        .args(["/Query", "/TN", WATCHDOG_TASK])
-        .output()
-    {
-        Ok(out) => out.status.success(),
-        Err(_) => false,
-    }
-}
-
-/// True if either launch mechanism is active: the HKCU Run key or the
-/// 5-minute watchdog scheduled task.
-fn autostart_enabled() -> bool {
-    run_key_set() || watchdog_task_exists()
-}
-
-/// Create (on) or delete (off) the `game_mode_switcher_watchdog` scheduled
-/// task that re-launches the applet every 5 minutes; while the applet is
-/// alive the single-instance mutex makes those launches no-ops.
-fn watchdog_task_set(on: bool) -> Result<(), String> {
-    if on {
-        let exe = std::env::current_exe()
-            .map_err(|e| format!("current_exe failed: {}", e))?
-            .to_string_lossy()
-            .into_owned();
-        let tr = format!("\"{}\" applet --bg", exe);
-        let out = std::process::Command::new("schtasks")
-            .args([
-                "/Create", "/F", "/TN", WATCHDOG_TASK, "/SC", "MINUTE", "/MO", "5", "/TR",
-            ])
-            .arg(&tr)
-            .output()
-            .map_err(|e| format!("schtasks spawn failed: {}", e))?;
-        if out.status.success() {
-            Ok(())
-        } else {
-            Err(format!(
-                "schtasks create failed: {}",
-                String::from_utf8_lossy(&out.stderr)
-            ))
-        }
-    } else {
-        // Lenient: a missing task is not an error.
-        if !watchdog_task_exists() {
-            return Ok(());
-        }
-        let out = std::process::Command::new("schtasks")
-            .args(["/Delete", "/F", "/TN", WATCHDOG_TASK])
-            .output()
-            .map_err(|e| format!("schtasks spawn failed: {}", e))?;
-        if out.status.success() {
-            Ok(())
-        } else {
-            Err(format!(
-                "schtasks delete failed: {}",
-                String::from_utf8_lossy(&out.stderr)
-            ))
-        }
-    }
-}
-
 /// Write (on) or delete (off) the `game_mode_switcher` value under the HKCU Run key.
-fn run_key_write(on: bool) -> Result<(), String> {
+fn autostart_set(on: bool) -> Result<(), String> {
     unsafe {
         use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
         use windows::Win32::System::Registry::{
@@ -300,20 +236,6 @@ fn run_key_write(on: bool) -> Result<(), String> {
                 result.0
             ))
         }
-    }
-}
-
-/// Enable or disable both launch mechanisms as one unit: the HKCU Run key
-/// (instant launch at login) and the 5-minute watchdog scheduled task
-/// (mid-session resurrection).
-fn autostart_set(on: bool) -> Result<(), String> {
-    let reg = run_key_write(on);
-    let task = watchdog_task_set(on);
-    match (reg, task) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(e), Ok(())) => Err(format!("run key: {}", e)),
-        (Ok(()), Err(e)) => Err(format!("watchdog task: {}", e)),
-        (Err(e1), Err(e2)) => Err(format!("run key: {}; watchdog task: {}", e1, e2)),
     }
 }
 
@@ -542,9 +464,9 @@ unsafe fn show_menu(s: &mut TrayState, hwnd: HWND) {
             let on = !autostart_enabled();
             match autostart_set(on) {
                 Ok(_) => tray_log(if on {
-                    "autostart = true (run key + watchdog task)"
+                    "autostart = true (HKCU Run)"
                 } else {
-                    "autostart = false (run key + watchdog task)"
+                    "autostart = false (HKCU Run)"
                 }),
                 Err(e) => tray_log(&format!("autostart failed: {}", e)),
             }
@@ -599,7 +521,7 @@ pub fn run(cfg: crate::Config) {
     std::panic::set_hook(Box::new(|info| {
         tray_log(&format!("PANIC: {}", info));
     }));
-    // Single-instance guard: duplicate launches (watchdog, double-click) exit
+    // Single-instance guard: duplicate launches (e.g. double-click) exit
     // immediately without touching the tray icon.
     unsafe {
         match CreateMutexW(None, false, w!("Local\\game_mode_switcher_tray")) {
