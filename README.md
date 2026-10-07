@@ -175,8 +175,10 @@ game, `game_hdr = on` turned it on, and it goes back to off on exit).
    Mode). The tool reads its `MatchedExeFullPath` entries (cached 5 min).
 2. A listed process only counts as a *running game* if **its own** 3D
    engine GPU utilization (from `\GPU Engine(*)\Utilization Percentage`) is
-   ≥ `kgl_min_gpu` percent — so background launchers that sit near 0% don't
-   trigger it.
+    ≥ `kgl_min_gpu` percent — so background launchers that sit near 0% don't
+    trigger it. Detection is sticky: once a game crosses the GPU-load
+    threshold, game mode holds until its process exits — menus and loading
+    screens with low GPU load don't drop you out.
 3. Optional extra signals (off by default): a borderless-fullscreen
    foreground window, or system-wide high 3D load.
 4. While a game runs, `game_mode` is applied; `grace_secs` after the last

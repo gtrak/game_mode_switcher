@@ -269,28 +269,53 @@ pub(crate) struct DetectSignals {
     pub(crate) gpu: bool,
 }
 
-fn kgl_match(
+static STICKY_GAME: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Sticky KGL detection core.
+/// `sticky` holds the lowercased exe name that currently holds detection:
+/// ACQUIRE (a candidate at/above `min_gpu` sets it), RETAIN (the sticky exe
+/// still running keeps detection regardless of load), RELEASE (otherwise).
+fn kgl_match_core(
+    sticky: &mut Option<String>,
     kgl_names: &HashSet<String>,
     procs: &[ProcessInfo],
     loads: &[(u32, f64)],
     ignore: &[String],
     min_gpu: f64,
 ) -> bool {
-    procs.iter().any(|p| {
+    let is_candidate = |p: &ProcessInfo| {
         let lower = p.name.to_ascii_lowercase();
-        if !kgl_names.contains(&lower) {
-            return false;
-        }
-        if ignore.iter().any(|g| p.name.eq_ignore_ascii_case(g)) {
-            return false;
-        }
+        kgl_names.contains(&lower) && !ignore.iter().any(|g| p.name.eq_ignore_ascii_case(g))
+    };
+    for p in procs.iter().filter(|p| is_candidate(p)) {
         let load = loads
             .iter()
             .find(|(pid, _)| *pid == p.pid)
             .map(|(_, v)| *v)
             .unwrap_or(0.0);
-        load >= min_gpu
-    })
+        if load >= min_gpu {
+            *sticky = Some(p.name.to_ascii_lowercase());
+            return true;
+        }
+    }
+    if let Some(exe) = sticky.as_ref() {
+        if procs.iter().any(|p| is_candidate(p) && p.name.eq_ignore_ascii_case(exe)) {
+            return true;
+        }
+    }
+    *sticky = None;
+    false
+}
+
+fn kgl_detected(
+    kgl_names: &HashSet<String>,
+    procs: &[ProcessInfo],
+    loads: &[(u32, f64)],
+    ignore: &[String],
+    min_gpu: f64,
+) -> bool {
+    let mut guard = STICKY_GAME.lock().unwrap_or_else(|p| p.into_inner());
+    kgl_match_core(&mut guard, kgl_names, procs, loads, ignore, min_gpu)
 }
 
 pub(crate) fn detect_signals(cfg: &Config, procs: &[ProcessInfo]) -> DetectSignals {
@@ -302,7 +327,7 @@ pub(crate) fn detect_signals(cfg: &Config, procs: &[ProcessInfo]) -> DetectSigna
     let kgl = if !kgl_list.is_empty() && cfg.kgl_min_gpu > 0 {
         let loads = gpu_loads().unwrap_or_default();
         let kgl_names: HashSet<String> = kgl_list.into_iter().collect();
-        kgl_match(&kgl_names, procs, &loads, &cfg.games_ignore, cfg.kgl_min_gpu as f64)
+        kgl_detected(&kgl_names, procs, &loads, &cfg.games_ignore, cfg.kgl_min_gpu as f64)
     } else {
         false
     };
@@ -351,7 +376,9 @@ mod tests {
         let kgl = names(&["robloxplayerbeta.exe", "r5apex_dx12.exe"]);
         let procs = vec![proc(100, "RobloxPlayerBeta.exe"), proc(200, "r5apex_dx12.exe")];
         let loads: Vec<(u32, f64)> = vec![(100, 0.0), (200, 15.0)];
-        assert!(kgl_match(&kgl, &procs, &loads, &[], 5.0));
+        let mut sticky: Option<String> = None;
+        assert!(kgl_match_core(&mut sticky, &kgl, &procs, &loads, &[], 5.0));
+        assert_eq!(sticky, Some("r5apex_dx12.exe".to_string()));
     }
 
     #[test]
@@ -360,7 +387,9 @@ mod tests {
         let procs = vec![proc(100, "RobloxPlayerBeta.exe")];
         let loads: Vec<(u32, f64)> = vec![(100, 15.0)];
         let ignore = vec!["robloxplayerbeta.exe".to_string()];
-        assert!(!kgl_match(&kgl, &procs, &loads, &ignore, 5.0));
+        let mut sticky: Option<String> = None;
+        assert!(!kgl_match_core(&mut sticky, &kgl, &procs, &loads, &ignore, 5.0));
+        assert_eq!(sticky, None);
     }
 
     #[test]
@@ -368,14 +397,48 @@ mod tests {
         let kgl = names(&["r5apex_dx12.exe"]);
         let procs = vec![proc(200, "r5apex_dx12.exe")];
         let loads: Vec<(u32, f64)> = vec![(200, 3.0)];
-        assert!(!kgl_match(&kgl, &procs, &loads, &[], 5.0));
+        let mut sticky: Option<String> = None;
+        assert!(!kgl_match_core(&mut sticky, &kgl, &procs, &loads, &[], 5.0));
+        assert_eq!(sticky, None);
     }
 
     #[test]
-    fn kgl_match_no_kgl_procs_is_false() {
+    fn kgl_match_no_kgl_procs_is_false_and_clears_sticky() {
         let kgl = names(&["r5apex_dx12.exe"]);
         let procs = vec![proc(300, "chrome.exe")];
         let loads: Vec<(u32, f64)> = vec![(300, 90.0)];
-        assert!(!kgl_match(&kgl, &procs, &loads, &[], 5.0));
+        let mut sticky = Some("r5apex_dx12.exe".to_string());
+        assert!(!kgl_match_core(&mut sticky, &kgl, &procs, &loads, &[], 5.0));
+        assert_eq!(sticky, None);
+    }
+
+    #[test]
+    fn kgl_retain_acquired_then_low_load() {
+        let kgl = names(&["apex.exe"]);
+        let procs = vec![proc(100, "apex.exe")];
+        let loads: Vec<(u32, f64)> = vec![(100, 0.0)];
+        let mut sticky = Some("apex.exe".to_string());
+        assert!(kgl_match_core(&mut sticky, &kgl, &procs, &loads, &[], 5.0));
+        assert_eq!(sticky, Some("apex.exe".to_string()));
+    }
+
+    #[test]
+    fn kgl_release_when_acquired_proc_exited() {
+        let kgl = names(&["apex.exe"]);
+        let procs = vec![proc(300, "chrome.exe")];
+        let loads: Vec<(u32, f64)> = vec![(300, 90.0)];
+        let mut sticky = Some("apex.exe".to_string());
+        assert!(!kgl_match_core(&mut sticky, &kgl, &procs, &loads, &[], 5.0));
+        assert_eq!(sticky, None);
+    }
+
+    #[test]
+    fn kgl_acquire_switches_sticky_to_new_active_game() {
+        let kgl = names(&["apex.exe", "other.exe"]);
+        let procs = vec![proc(100, "apex.exe"), proc(200, "other.exe")];
+        let loads: Vec<(u32, f64)> = vec![(100, 0.0), (200, 90.0)];
+        let mut sticky = Some("apex.exe".to_string());
+        assert!(kgl_match_core(&mut sticky, &kgl, &procs, &loads, &[], 5.0));
+        assert_eq!(sticky, Some("other.exe".to_string()));
     }
 }
