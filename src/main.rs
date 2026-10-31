@@ -1,3 +1,5 @@
+#![windows_subsystem = "windows"]
+
 use std::{
     env,
     path::PathBuf,
@@ -385,7 +387,66 @@ OPTIONS:
     );
 }
 
+/// Re-attach the parent console (when launched from a terminal) so the
+/// windows-subsystem binary keeps full CLI output; when headless (Run key /
+/// double-click), point stdio at NUL so println!/eprintln! can never panic
+/// on an invalid stdout handle. Must run before any print: Rust std
+/// captures the stdio handles lazily via GetStdHandle on first use.
+/// AttachConsole is only attempted when a std handle is missing: a caller
+/// that redirected stdio (pipes) already has valid handles, and attaching
+/// would bypass those pipes.
+fn bootstrap_console() {
+    use windows::core::{w, PCWSTR};
+    use windows::Win32::Foundation::{
+        GENERIC_ACCESS_RIGHTS, GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE,
+    };
+    use windows::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_SHARE_MODE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+    use windows::Win32::System::Console::{
+        AttachConsole, GetStdHandle, SetStdHandle, STD_ERROR_HANDLE, STD_HANDLE, STD_INPUT_HANDLE,
+        STD_OUTPUT_HANDLE, ATTACH_PARENT_PROCESS,
+    };
+    unsafe {
+        let stds = [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE];
+        let any_missing = stds.iter().any(|&h| match GetStdHandle(h) {
+            Err(_) => true,
+            Ok(hd) => hd.is_invalid() || hd == INVALID_HANDLE_VALUE,
+        });
+        // Failure is expected when launched from the Run key / Explorer
+        // (the parent has no console to attach to).
+        let attached = any_missing && AttachConsole(ATTACH_PARENT_PROCESS).is_ok();
+        let (in_name, out_name) = if attached {
+            (w!("CONIN$"), w!("CONOUT$"))
+        } else {
+            (w!("NUL"), w!("NUL"))
+        };
+        let fixup = |handle: STD_HANDLE,
+                     name: PCWSTR,
+                     access: GENERIC_ACCESS_RIGHTS,
+                     share: FILE_SHARE_MODE| {
+            let cur = GetStdHandle(handle);
+            let bad = match cur {
+                Err(_) => true,
+                Ok(h) => h.is_invalid() || h == INVALID_HANDLE_VALUE,
+            };
+            if bad {
+                if let Ok(h) =
+                    CreateFileW(name, access.0, share, None, OPEN_EXISTING, Default::default(), None)
+                {
+                    let _ = SetStdHandle(handle, h);
+                }
+                // CreateFileW failed: leave the handle as-is (never panic).
+            }
+        };
+        fixup(STD_INPUT_HANDLE, in_name, GENERIC_READ, FILE_SHARE_READ);
+        fixup(STD_OUTPUT_HANDLE, out_name, GENERIC_WRITE, FILE_SHARE_WRITE);
+        fixup(STD_ERROR_HANDLE, out_name, GENERIC_WRITE, FILE_SHARE_WRITE);
+    }
+}
+
 fn main() {
+    bootstrap_console();
     let raw: Vec<String> = env::args().skip(1).collect();
     let args = parse_args(&raw);
     match args.cmd.as_str() {

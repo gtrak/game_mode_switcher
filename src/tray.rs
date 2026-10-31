@@ -39,6 +39,7 @@ struct TrayState {
     pre_game_hdr: Option<bool>,
     icon_hdr: HICON,
     icon_sdr: HICON,
+    icon_retries: u32,
 }
 
 fn tray_log(msg: &str) {
@@ -329,6 +330,26 @@ fn toggle_hdr(s: &mut TrayState) {
 }
 
 fn tick(s: &mut TrayState) {
+    // Retry the tray-icon add if the initial NIM_ADD failed (early login:
+    // Explorer's tray may not accept the icon yet). One attempt per tick,
+    // no second timer; nid is rebuilt to mirror the original add.
+    if s.icon_retries > 0 {
+        let mut nid = new_nid(s.hwnd);
+        nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+        nid.uCallbackMessage = CB_MSG;
+        nid.hIcon = if s.hdr_on { s.icon_hdr } else { s.icon_sdr };
+        let tip = hdr_hz_text(s);
+        let tip = tip.encode_utf16().take(127).collect::<Vec<u16>>();
+        nid.szTip[..tip.len()].copy_from_slice(&tip);
+        nid.szTip[tip.len()] = 0;
+        if unsafe { Shell_NotifyIconW(NIM_ADD, &nid) }.as_bool() {
+            tray_log("tray icon added (retry)");
+            s.icon_retries = 0;
+            update_icon(s);
+        } else {
+            s.icon_retries -= 1;
+        }
+    }
     poll_hdr(s);
     if let Some(spec) = s.manual {
         if s.applied != Some(spec) {
@@ -595,6 +616,7 @@ pub fn run(cfg: crate::Config) {
             pre_game_hdr: None,
             icon_hdr,
             icon_sdr,
+            icon_retries: 0,
         });
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, (&mut *state) as *mut TrayState as isize);
 
@@ -604,6 +626,9 @@ pub fn run(cfg: crate::Config) {
         nid.hIcon = if hdr0 { icon_hdr } else { icon_sdr };
         if !Shell_NotifyIconW(NIM_ADD, &nid).as_bool() {
             tray_log("Shell_NotifyIconW(NIM_ADD) failed (explorer not running?)");
+            // Early login: Explorer's tray may not accept the icon yet;
+            // tick() retries the add once per poll (see icon_retries).
+            state.icon_retries = 20;
         }
 
         SetTimer(

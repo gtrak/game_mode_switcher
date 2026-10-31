@@ -17,6 +17,8 @@ features = [
     "Win32_System_LibraryLoader",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Performance",
+    "Win32_System_Console",
+    "Win32_Storage_FileSystem",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ]

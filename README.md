@@ -73,6 +73,10 @@ Windows HDR state every poll cycle — even if HDR was changed elsewhere.
 
 The applet logs to `game_mode_switcher_tray.log` next to the exe.
 
+The applet runs windowless (windows-subsystem binary), so autostart shows no
+console window; the CLI still works normally from a terminal, and there is no
+stray window whose closing can kill the applet.
+
 ## CLI
 
 ```
